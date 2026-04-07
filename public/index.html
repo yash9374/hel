@@ -13,6 +13,25 @@
         <div id="status" class="status">Not connected</div>
       </header>
 
+      <section id="auth" class="panel">
+        <form id="authForm" class="authForm">
+          <div class="authTitle">Continue with email</div>
+          <input id="emailInput" class="input" autocomplete="email" placeholder="Email" />
+          <div class="roleRow">
+            <label class="roleChip">
+              <input type="radio" name="role" value="student" checked />
+              <span>Student</span>
+            </label>
+            <label class="roleChip">
+              <input type="radio" name="role" value="interviewer" />
+              <span>Interviewer</span>
+            </label>
+          </div>
+          <button id="authBtn" class="btn primary" type="submit">Continue</button>
+          <div id="authError" class="errorText hidden"></div>
+        </form>
+      </section>
+
       <section id="lobby" class="panel">
         <div class="row">
           <button id="createBtn" class="btn primary" type="button">Create meeting</button>

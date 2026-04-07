@@ -37,6 +37,44 @@ body {
   background: #ffffff;
 }
 
+.authForm {
+  display: grid;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.authTitle {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.roleRow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.roleChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  cursor: pointer;
+  user-select: none;
+}
+
+.roleChip input {
+  margin: 0;
+}
+
+.errorText {
+  color: #b91c1c;
+  font-size: 13px;
+}
+
 .row {
   display: flex;
   gap: 10px;

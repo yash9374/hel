@@ -1,4 +1,8 @@
 const statusEl = document.getElementById("status");
+const authEl = document.getElementById("auth");
+const authForm = document.getElementById("authForm");
+const emailInput = document.getElementById("emailInput");
+const authError = document.getElementById("authError");
 const lobbyEl = document.getElementById("lobby");
 const meetingEl = document.getElementById("meeting");
 const createBtn = document.getElementById("createBtn");
@@ -27,6 +31,8 @@ let screenStream;
 let isScreenSharing = false;
 let micEnabled = true;
 let cameraEnabled = true;
+let authToken = localStorage.getItem("authToken") || "";
+let currentUser = null;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -38,6 +44,12 @@ function setStatus(text) {
 function setLobbyVisible(visible) {
   lobbyEl.classList.toggle("hidden", !visible);
   meetingEl.classList.toggle("hidden", visible);
+}
+
+function setAuthed(isAuthed) {
+  authEl.classList.toggle("hidden", isAuthed);
+  lobbyEl.classList.toggle("hidden", !isAuthed);
+  meetingEl.classList.toggle("hidden", true);
 }
 
 function normalizeCode(code) {
@@ -53,6 +65,20 @@ function generateCode() {
   let out = "";
   for (let i = 0; i < 6; i += 1) out += alphabet[Math.floor(Math.random() * alphabet.length)];
   return out;
+}
+
+async function api(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("Content-Type") && options.body) headers.set("Content-Type", "application/json");
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+  const res = await fetch(path, { ...options, headers });
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { ok: res.ok && body?.ok, status: res.status, body };
 }
 
 async function ensureCamera() {
@@ -98,10 +124,13 @@ function setCameraEnabled(enabled) {
 
 function ensureSocket() {
   if (socket) return socket;
-  socket = window.io();
+  socket = window.io({
+    auth: { token: authToken }
+  });
 
   socket.on("connect", () => setStatus(`Connected (${socket.id})`));
   socket.on("disconnect", () => setStatus("Disconnected"));
+  socket.on("connect_error", () => setStatus("Connection error"));
 
   socket.on("existing-peers", async ({ peerIds, roomCode: rc }) => {
     roomCode = rc;
@@ -235,7 +264,16 @@ async function join(code) {
   await ensureCamera();
 
   setStatus("Joining room…");
-  ensureSocket().emit("join-room", { roomCode });
+  const joinResult = await new Promise((resolve) => {
+    ensureSocket().emit("join-room", { roomCode }, (ack) => resolve(ack || { ok: true }));
+  });
+
+  if (!joinResult.ok) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = joinResult.error || "Failed to join meeting";
+    setLobbyVisible(true);
+    return;
+  }
 
   roomCodeLabel.textContent = roomCode;
   const url = new URL(window.location.href);
@@ -318,7 +356,21 @@ async function leave() {
 }
 
 createBtn.addEventListener("click", async () => {
-  const code = generateCode();
+  if (!currentUser || currentUser.role !== "interviewer") {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Only interviewers can start a meeting.";
+    return;
+  }
+
+  meetingInfo.classList.add("hidden");
+  const res = await api("/api/create-meeting", { method: "POST" });
+  if (!res.ok) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = res.body?.error || "Failed to create meeting";
+    return;
+  }
+
+  const code = res.body.code || generateCode();
   meetingInfo.classList.remove("hidden");
   meetingInfo.textContent = `Meeting code: ${code}`;
   await join(code);
@@ -354,5 +406,53 @@ setLobbyVisible(true);
 setStatus("Not connected");
 syncControlUI();
 
-const urlCode = new URL(window.location.href).searchParams.get("code");
-if (urlCode) join(urlCode).catch(() => {});
+async function initAuth() {
+  setAuthed(false);
+
+  if (authToken) {
+    const res = await api("/api/me");
+    if (res.ok) {
+      currentUser = res.body.user;
+      setAuthed(true);
+      if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
+      else createBtn.classList.remove("hidden");
+      const urlCode = new URL(window.location.href).searchParams.get("code");
+      if (urlCode) join(urlCode).catch(() => {});
+      return;
+    }
+  }
+
+  authToken = "";
+  localStorage.removeItem("authToken");
+  currentUser = null;
+  setAuthed(false);
+}
+
+authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  authError.classList.add("hidden");
+  authError.textContent = "";
+
+  const email = String(emailInput.value || "").trim();
+  const role = new FormData(authForm).get("role");
+
+  const res = await api("/api/login", {
+    method: "POST",
+    body: JSON.stringify({ email, role })
+  });
+
+  if (!res.ok) {
+    authError.classList.remove("hidden");
+    authError.textContent = res.body?.error || "Login failed";
+    return;
+  }
+
+  authToken = res.body.token;
+  localStorage.setItem("authToken", authToken);
+  currentUser = res.body.user;
+  setAuthed(true);
+  if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
+  else createBtn.classList.remove("hidden");
+});
+
+initAuth().catch(() => {});
