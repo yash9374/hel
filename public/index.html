@@ -17,17 +17,7 @@
         <form id="authForm" class="authForm">
           <div class="authTitle">Continue with email</div>
           <input id="emailInput" class="input" autocomplete="email" placeholder="Email" />
-          <div id="roleRow" class="roleRow hidden">
-            <label class="roleChip">
-              <input type="radio" name="role" value="student" checked />
-              <span>Student</span>
-            </label>
-            <label class="roleChip">
-              <input type="radio" name="role" value="interviewer" />
-              <span>Interviewer</span>
-            </label>
-          </div>
-          <button id="authBtn" class="btn primary" type="submit">Continue</button>
+          <button id="authBtn" class="btn primary" type="submit">Check account</button>
           <div id="authError" class="errorText hidden"></div>
         </form>
       </section>
@@ -35,6 +25,7 @@
       <section id="lobby" class="panel">
         <div class="row">
           <button id="createBtn" class="btn primary" type="button">Create meeting</button>
+          <button id="logoutBtn" class="btn danger" type="button">Logout</button>
         </div>
 
         <div class="divider">or</div>

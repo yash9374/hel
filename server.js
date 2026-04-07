@@ -109,7 +109,6 @@ function requireAuth(req, res, next) {
 
 app.post("/api/login", requireSupabase, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
-  const requestedRole = normalizeRole(req.body?.role);
   if (!email) return res.status(400).json({ ok: false, error: "Invalid email" });
   if (!sessionSecret) return res.status(500).json({ ok: false, error: "Server not configured" });
 
@@ -123,18 +122,7 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   if (existingError) return res.status(500).json({ ok: false, error: "Database error" });
 
-  if (!existing) {
-    if (!requestedRole) return res.status(200).json({ ok: false, needsRole: true });
-
-    const { error: insertError } = await supabase
-      .from("users")
-      .insert({ email, role: requestedRole, created_at: now, last_seen_at: now });
-    if (insertError) return res.status(500).json({ ok: false, error: "Database error" });
-
-    const token = signToken({ email, role: requestedRole, iat: Date.now() });
-    if (!token) return res.status(500).json({ ok: false, error: "Server not configured" });
-    return res.status(200).json({ ok: true, token, user: { email, role: requestedRole }, created: true });
-  }
+  if (!existing) return res.status(404).json({ ok: false, error: "Account not found" });
 
   const role = normalizeRole(existing.role);
   if (!role) return res.status(500).json({ ok: false, error: "Role missing in database" });
@@ -147,7 +135,7 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   const token = signToken({ email, role, iat: Date.now() });
   if (!token) return res.status(500).json({ ok: false, error: "Server not configured" });
-  return res.status(200).json({ ok: true, token, user: { email, role }, created: false });
+  return res.status(200).json({ ok: true, token, user: { email, role } });
 });
 
 app.get("/api/me", requireAuth, (req, res) => {

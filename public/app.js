@@ -2,13 +2,13 @@ const statusEl = document.getElementById("status");
 const authEl = document.getElementById("auth");
 const authForm = document.getElementById("authForm");
 const emailInput = document.getElementById("emailInput");
-const roleRow = document.getElementById("roleRow");
 const authBtn = document.getElementById("authBtn");
 const authError = document.getElementById("authError");
 const lobbyEl = document.getElementById("lobby");
 const meetingEl = document.getElementById("meeting");
 const createBtn = document.getElementById("createBtn");
 const joinForm = document.getElementById("joinForm");
+const logoutBtn = document.getElementById("logoutBtn");
 const codeInput = document.getElementById("codeInput");
 const meetingInfo = document.getElementById("meetingInfo");
 const roomCodeLabel = document.getElementById("roomCodeLabel");
@@ -400,6 +400,15 @@ leaveBtn.addEventListener("click", () => {
   leave().catch(() => {});
 });
 
+logoutBtn.addEventListener("click", () => {
+  authToken = "";
+  localStorage.removeItem("authToken");
+  currentUser = null;
+  setAuthed(false);
+  setStatus("Not connected");
+  emailInput.value = ""; // Clear the email input for the next login
+});
+
 window.addEventListener("beforeunload", () => {
   if (socket && socket.connected) socket.emit("leave-room");
 });
@@ -410,8 +419,7 @@ syncControlUI();
 
 async function initAuth() {
   setAuthed(false);
-  roleRow.classList.add("hidden");
-  authBtn.textContent = "Continue";
+  authBtn.textContent = "Check account";
 
   if (authToken) {
     const res = await api("/api/me");
@@ -420,6 +428,7 @@ async function initAuth() {
       setAuthed(true);
       if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
       else createBtn.classList.remove("hidden");
+      setStatus(`Logged in as ${currentUser.role}`);
       const urlCode = new URL(window.location.href).searchParams.get("code");
       if (urlCode) join(urlCode).catch(() => {});
       return;
@@ -430,8 +439,7 @@ async function initAuth() {
   localStorage.removeItem("authToken");
   currentUser = null;
   setAuthed(false);
-  roleRow.classList.add("hidden");
-  authBtn.textContent = "Continue";
+  authBtn.textContent = "Check account";
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -440,22 +448,15 @@ authForm.addEventListener("submit", async (e) => {
   authError.textContent = "";
 
   const email = String(emailInput.value || "").trim();
-  const wantsCreate = !roleRow.classList.contains("hidden");
-  const role = wantsCreate ? new FormData(authForm).get("role") : undefined;
 
   const res = await api("/api/login", {
     method: "POST",
-    body: JSON.stringify({ email, role })
+    body: JSON.stringify({ email })
   });
 
   if (!res.ok) {
-    if (res.body?.needsRole) {
-      roleRow.classList.remove("hidden");
-      authBtn.textContent = "Create account";
-      return;
-    }
     authError.classList.remove("hidden");
-    authError.textContent = res.body?.error || "Login failed";
+    authError.textContent = res.body?.error || "Account check failed";
     return;
   }
 
@@ -463,10 +464,10 @@ authForm.addEventListener("submit", async (e) => {
   localStorage.setItem("authToken", authToken);
   currentUser = res.body.user;
   setAuthed(true);
-  roleRow.classList.add("hidden");
-  authBtn.textContent = "Continue";
+  authBtn.textContent = "Check account";
   if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
   else createBtn.classList.remove("hidden");
+  setStatus(`Logged in as ${currentUser.role}`);
 });
 
 initAuth().catch(() => {});
