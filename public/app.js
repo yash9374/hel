@@ -1,459 +1,310 @@
-const joinPanel = document.getElementById("joinPanel");
-const callStage = document.getElementById("callStage");
-
-const roomIdInput = document.getElementById("roomId");
-const roleSelect = document.getElementById("role");
-const joinBtn = document.getElementById("joinBtn");
-const joinHint = document.getElementById("joinHint");
-
-const roomLabel = document.getElementById("roomLabel");
-const statusLabel = document.getElementById("statusLabel");
-
+const statusEl = document.getElementById("status");
+const lobbyEl = document.getElementById("lobby");
+const meetingEl = document.getElementById("meeting");
+const createBtn = document.getElementById("createBtn");
+const joinForm = document.getElementById("joinForm");
+const codeInput = document.getElementById("codeInput");
+const meetingInfo = document.getElementById("meetingInfo");
+const roomCodeLabel = document.getElementById("roomCodeLabel");
 const localVideo = document.getElementById("localVideo");
-const remoteVideo = document.getElementById("remoteVideo");
-
-const micBtn = document.getElementById("micBtn");
-const camBtn = document.getElementById("camBtn");
-const shareBtn = document.getElementById("shareBtn");
-const fsBtn = document.getElementById("fsBtn");
+const remoteVideos = document.getElementById("remoteVideos");
+const screenShareBtn = document.getElementById("screenShareBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 
-function query() {
-  const params = new URLSearchParams(location.search);
-  return Object.fromEntries(params.entries());
-}
+const rtcConfig = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+};
 
-function isSEB() {
-  const ua = navigator.userAgent || "";
-  return ua.toLowerCase().includes("safeexambrowser") || ua.toLowerCase().includes("seb");
-}
+let socket;
+let roomCode;
+let localStream;
+let cameraStream;
+let screenStream;
+let isScreenSharing = false;
 
-function setHint(text) {
-  joinHint.textContent = text || "";
-}
+const peers = new Map();
+const remoteMedia = new Map();
 
 function setStatus(text) {
-  statusLabel.textContent = text || "";
+  statusEl.textContent = text;
 }
 
-function setControlState(btn, on) {
-  btn.classList.toggle("off", !on);
+function setLobbyVisible(visible) {
+  lobbyEl.classList.toggle("hidden", !visible);
+  meetingEl.classList.toggle("hidden", visible);
 }
 
-function randomRoom() {
-  const s = crypto.getRandomValues(new Uint32Array(2));
-  return `${s[0].toString(16)}${s[1].toString(16)}`.slice(0, 10).toUpperCase();
+function normalizeCode(code) {
+  return String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 10);
 }
 
-const qp = query();
-if (qp.room) roomIdInput.value = String(qp.room).trim();
-const pathName = location.pathname.toLowerCase();
-if (pathName.startsWith("/candidate")) {
-  roleSelect.value = "candidate";
-  roleSelect.disabled = true;
-} else if (pathName.startsWith("/hr")) {
-  roleSelect.value = "hr";
-  roleSelect.disabled = true;
-} else if (qp.role) roleSelect.value = qp.role === "hr" ? "hr" : "candidate";
-if (!roomIdInput.value) roomIdInput.value = randomRoom();
-
-let ws = null;
-let pc = null;
-let localStream = null;
-let screenStream = null;
-let cameraVideoTrack = null;
-let role = "candidate";
-let roomId = null;
-let connectedPeerCount = 0;
-let iceServersPromise = null;
-
-function wsUrl() {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}/ws`;
+function generateCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < 6; i += 1) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
 }
 
-async function ensureLocalMedia() {
-  if (localStream) return localStream;
-  localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-  localVideo.srcObject = localStream;
-  cameraVideoTrack = localStream.getVideoTracks()[0] || null;
-  setControlState(micBtn, (localStream.getAudioTracks()[0] || {}).enabled !== false);
-  setControlState(camBtn, (localStream.getVideoTracks()[0] || {}).enabled !== false);
-  return localStream;
-}
-
-function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...(options || {}), signal: controller.signal }).finally(() => clearTimeout(t));
-}
-
-function getIceServers() {
-  if (iceServersPromise) return iceServersPromise;
-  iceServersPromise = (async () => {
-    try {
-      const res = await fetchWithTimeout(`/api/ice?role=${encodeURIComponent(role)}`, { cache: "no-store" }, 2500);
-      if (!res.ok) throw new Error("bad status");
-      const json = await res.json();
-      if (json && Array.isArray(json.iceServers) && json.iceServers.length) return json.iceServers;
-    } catch {
-      return [{ urls: "stun:stun.l.google.com:19302" }];
-    }
-    return [{ urls: "stun:stun.l.google.com:19302" }];
-  })();
-  return iceServersPromise;
-}
-
-function createPeerConnection(iceServers) {
-  pc = new RTCPeerConnection({
-    iceServers: iceServers && iceServers.length ? iceServers : [{ urls: "stun:stun.l.google.com:19302" }]
+async function ensureCamera() {
+  if (cameraStream) return cameraStream;
+  cameraStream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: { width: { ideal: 1280 }, height: { ideal: 720 } }
   });
+  localStream = cameraStream;
+  localVideo.srcObject = localStream;
+  return cameraStream;
+}
+
+function ensureSocket() {
+  if (socket) return socket;
+  socket = window.io();
+
+  socket.on("connect", () => setStatus(`Connected (${socket.id})`));
+  socket.on("disconnect", () => setStatus("Disconnected"));
+
+  socket.on("existing-peers", async ({ peerIds, roomCode: rc }) => {
+    roomCode = rc;
+    roomCodeLabel.textContent = roomCode;
+    for (const peerId of peerIds) createPeerConnection(peerId, true);
+  });
+
+  socket.on("peer-joined", ({ peerId }) => {
+    createPeerConnection(peerId, false);
+  });
+
+  socket.on("peer-left", ({ peerId }) => {
+    cleanupPeer(peerId);
+  });
+
+  socket.on("signal", async ({ from, payload }) => {
+    const pc = createPeerConnection(from, false);
+    if (!payload || typeof payload !== "object") return;
+
+    if (payload.type === "sdp" && payload.description) {
+      await pc.setRemoteDescription(payload.description);
+      if (payload.description.type === "offer") {
+        await pc.setLocalDescription(await pc.createAnswer());
+        socket.emit("signal", { to: from, payload: { type: "sdp", description: pc.localDescription } });
+      }
+      return;
+    }
+
+    if (payload.type === "ice" && payload.candidate) {
+      try {
+        await pc.addIceCandidate(payload.candidate);
+      } catch {
+        return;
+      }
+    }
+  });
+
+  return socket;
+}
+
+function createRemoteCard(peerId) {
+  const card = document.createElement("div");
+  card.className = "videoCard";
+  card.id = `remote-${peerId}`;
+
+  const label = document.createElement("div");
+  label.className = "videoLabel";
+  label.textContent = peerId.slice(0, 6);
+
+  const video = document.createElement("video");
+  video.autoplay = true;
+  video.playsInline = true;
+
+  card.appendChild(label);
+  card.appendChild(video);
+  remoteVideos.appendChild(card);
+
+  return { card, video };
+}
+
+function ensureRemoteStream(peerId) {
+  let stream = remoteMedia.get(peerId);
+  if (stream) return stream;
+  stream = new MediaStream();
+  remoteMedia.set(peerId, stream);
+  const { video } = createRemoteCard(peerId);
+  video.srcObject = stream;
+  return stream;
+}
+
+function createPeerConnection(peerId, initiator) {
+  if (peers.has(peerId)) return peers.get(peerId);
+
+  const pc = new RTCPeerConnection(rtcConfig);
+  peers.set(peerId, pc);
+
+  if (localStream) {
+    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+  }
 
   pc.onicecandidate = (event) => {
     if (!event.candidate) return;
-    sendSignal({ kind: "ice", candidate: event.candidate });
+    ensureSocket().emit("signal", { to: peerId, payload: { type: "ice", candidate: event.candidate } });
   };
 
   pc.ontrack = (event) => {
-    const [stream] = event.streams;
-    if (stream) remoteVideo.srcObject = stream;
+    const stream = ensureRemoteStream(peerId);
+    if (!stream.getTracks().some((t) => t.id === event.track.id)) stream.addTrack(event.track);
   };
 
   pc.onconnectionstatechange = () => {
-    const st = pc.connectionState;
-    if (st === "connected") setStatus("Connected");
-    if (st === "connecting") setStatus("Connecting…");
-    if (st === "failed") setStatus("Connection failed");
-    if (st === "disconnected") setStatus("Disconnected");
-    if (st === "closed") setStatus("Closed");
+    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) cleanupPeer(peerId);
   };
+
+  if (initiator) {
+    (async () => {
+      await pc.setLocalDescription(await pc.createOffer());
+      ensureSocket().emit("signal", { to: peerId, payload: { type: "sdp", description: pc.localDescription } });
+    })().catch(() => {});
+  }
 
   return pc;
 }
 
-function attachLocalTracks() {
-  if (!pc || !localStream) return;
-  for (const track of localStream.getTracks()) {
-    pc.addTrack(track, localStream);
-  }
-}
-
-function send(msg) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify(msg));
-}
-
-function sendSignal(data) {
-  send({ type: "signal", data });
-}
-
-async function maybeStartOffer() {
-  if (!pc) return;
-  if (role !== "hr") return;
-  if (connectedPeerCount < 2) return;
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  sendSignal({ kind: "offer", sdp: pc.localDescription });
-}
-
-async function handleSignal(data) {
-  if (!pc) return;
-  if (!data || typeof data.kind !== "string") return;
-
-  if (data.kind === "offer") {
-    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    sendSignal({ kind: "answer", sdp: pc.localDescription });
-    return;
-  }
-
-  if (data.kind === "answer") {
-    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    return;
-  }
-
-  if (data.kind === "ice" && data.candidate) {
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch {
-      return;
-    }
-  }
-}
-
-function applyCandidateLockdown() {
-  if (role !== "candidate") return;
-
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
-  document.addEventListener("copy", (e) => e.preventDefault());
-  document.addEventListener("cut", (e) => e.preventDefault());
-  document.addEventListener("paste", (e) => e.preventDefault());
-
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      const k = (e.key || "").toLowerCase();
-      const ctrl = e.ctrlKey || e.metaKey;
-      const alt = e.altKey;
-
-      const blocked =
-        k === "f11" ||
-        k === "f12" ||
-        k === "escape" ||
-        (ctrl && ["l", "r", "w", "t", "n", "p", "o", "+", "-", "0"].includes(k)) ||
-        (alt && ["f4", "tab", "left", "right"].includes(k));
-
-      if (blocked) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    },
-    { capture: true }
-  );
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) setStatus("Stay in the interview tab");
-  });
-}
-
-async function enterFullscreen() {
-  try {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen();
-    }
-  } catch {
-    return;
-  }
-}
-
-function enforceSEBForCandidate() {
-  const allowNonSEB = query().allowNonSEB === "1";
-  if (role !== "candidate") return true;
-  if (isSEB()) return true;
-  if (allowNonSEB) return true;
-  return false;
-}
-
-async function joinRoom() {
-  role = roleSelect.value === "hr" ? "hr" : "candidate";
-  roomId = String(roomIdInput.value || "").trim();
-
-  if (!roomId) {
-    setHint("Enter a room code");
-    return;
-  }
-
-  if (!enforceSEBForCandidate()) {
-    setHint("Candidate mode requires Safe Exam Browser (SEB).");
-    return;
-  }
-
-  joinBtn.disabled = true;
-  setHint("");
-
-  try {
-    await ensureLocalMedia();
-  } catch {
-    joinBtn.disabled = false;
-    setHint("Allow camera and microphone permissions");
-    return;
-  }
-
-  applyCandidateLockdown();
-  if (role === "candidate") await enterFullscreen();
-
-  ws = new WebSocket(`${wsUrl()}?role=${encodeURIComponent(role)}`);
-  ws.onopen = () => {
-    send({ type: "join", roomId });
-  };
-
-  ws.onmessage = async (event) => {
-    let msg = null;
-    try {
-      msg = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-
-    if (!msg || typeof msg.type !== "string") return;
-
-    if (msg.type === "room-full") {
-      joinBtn.disabled = false;
-      setHint("This room is already in use. Use a different room code.");
-      try {
-        ws.close();
-      } catch {
-        return;
-      }
-      ws = null;
-      return;
-    }
-
-    if (msg.type === "joined") {
-      connectedPeerCount = Number(msg.peerCount || 1);
-      joinPanel.classList.add("hidden");
-      callStage.classList.remove("hidden");
-      roomLabel.textContent = `Room ${roomId} · ${role.toUpperCase()}`;
-      setStatus(connectedPeerCount >= 2 ? "Connecting…" : "Waiting for peer…");
-
-      const iceServers = await getIceServers();
-      createPeerConnection(iceServers);
-      attachLocalTracks();
-      if (connectedPeerCount >= 2) await maybeStartOffer();
-      return;
-    }
-
-    if (msg.type === "peer-joined") {
-      connectedPeerCount = Number(msg.peerCount || 2);
-      setStatus("Connecting…");
-      await maybeStartOffer();
-      return;
-    }
-
-    if (msg.type === "peer-left") {
-      connectedPeerCount = Number(msg.peerCount || 1);
-      setStatus("Peer left");
-      remoteVideo.srcObject = null;
-      return;
-    }
-
-    if (msg.type === "signal") {
-      try {
-        await handleSignal(msg.data);
-      } catch {
-        return;
-      }
-    }
-  };
-
-  ws.onclose = () => {
-    setStatus("Disconnected");
-  };
-
-  ws.onerror = () => {
-    setStatus("Network error");
-  };
-}
-
-function stopStream(stream) {
-  if (!stream) return;
-  for (const t of stream.getTracks()) t.stop();
-}
-
-async function startScreenShare() {
-  if (!pc) return;
-  if (screenStream) return;
-
-  try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-  } catch {
-    return;
-  }
-
-  const screenTrack = screenStream.getVideoTracks()[0];
-  if (!screenTrack) return;
-
-  const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
-  if (sender) await sender.replaceTrack(screenTrack);
-
-  const preview = new MediaStream([screenTrack]);
-  localVideo.srcObject = preview;
-  setControlState(shareBtn, true);
-
-  screenTrack.onended = async () => {
-    await stopScreenShare();
-  };
-}
-
-async function stopScreenShare() {
-  if (!pc) return;
-  if (!screenStream) return;
-
-  const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
-  if (sender && cameraVideoTrack) await sender.replaceTrack(cameraVideoTrack);
-
-  stopStream(screenStream);
-  screenStream = null;
-  localVideo.srcObject = localStream;
-  setControlState(shareBtn, false);
-}
-
-function toggleMic() {
-  if (!localStream) return;
-  const t = localStream.getAudioTracks()[0];
-  if (!t) return;
-  t.enabled = !t.enabled;
-  setControlState(micBtn, t.enabled);
-}
-
-function toggleCam() {
-  if (!localStream) return;
-  const t = localStream.getVideoTracks()[0];
-  if (!t) return;
-  t.enabled = !t.enabled;
-  setControlState(camBtn, t.enabled);
-}
-
-async function toggleShare() {
-  if (screenStream) await stopScreenShare();
-  else await startScreenShare();
-}
-
-async function leaveRoom() {
-  try {
-    send({ type: "leave" });
-  } catch {
-    return;
-  }
-
-  if (ws) {
-    try {
-      ws.close();
-    } catch {
-      return;
-    }
-  }
-
+function cleanupPeer(peerId) {
+  const pc = peers.get(peerId);
   if (pc) {
     try {
+      pc.onicecandidate = null;
+      pc.ontrack = null;
       pc.close();
     } catch {
       return;
     }
   }
 
-  if (screenStream) await stopScreenShare();
-
-  remoteVideo.srcObject = null;
-  localVideo.srcObject = null;
-  stopStream(localStream);
-  localStream = null;
-  pc = null;
-  ws = null;
-
-  joinBtn.disabled = false;
-  callStage.classList.add("hidden");
-  joinPanel.classList.remove("hidden");
-  setStatus("");
+  peers.delete(peerId);
+  remoteMedia.delete(peerId);
+  const el = document.getElementById(`remote-${peerId}`);
+  if (el) el.remove();
 }
 
-joinBtn.addEventListener("click", joinRoom);
-micBtn.addEventListener("click", toggleMic);
-camBtn.addEventListener("click", toggleCam);
-shareBtn.addEventListener("click", toggleShare);
-fsBtn.addEventListener("click", enterFullscreen);
-leaveBtn.addEventListener("click", leaveRoom);
+async function join(code) {
+  roomCode = normalizeCode(code);
+  if (!roomCode) return;
 
-roleSelect.addEventListener("change", () => {
-  role = roleSelect.value === "hr" ? "hr" : "candidate";
-  if (role === "candidate" && !enforceSEBForCandidate()) {
-    setHint("Candidate mode requires Safe Exam Browser (SEB).");
-  } else {
-    setHint("");
+  codeInput.value = roomCode;
+  setLobbyVisible(false);
+  setStatus("Requesting camera/mic…");
+
+  await ensureCamera();
+
+  setStatus("Joining room…");
+  ensureSocket().emit("join-room", { roomCode });
+
+  roomCodeLabel.textContent = roomCode;
+  const url = new URL(window.location.href);
+  url.searchParams.set("code", roomCode);
+  window.history.replaceState({}, "", url.toString());
+}
+
+function stopStream(stream) {
+  if (!stream) return;
+  for (const track of stream.getTracks()) track.stop();
+}
+
+async function startScreenShare() {
+  if (isScreenSharing) return;
+  screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  const screenTrack = screenStream.getVideoTracks()[0];
+  if (!screenTrack) return;
+
+  isScreenSharing = true;
+  screenShareBtn.textContent = "Stop share";
+
+  const audioTrack = localStream?.getAudioTracks()[0] ?? null;
+  localVideo.srcObject = new MediaStream([screenTrack, ...(audioTrack ? [audioTrack] : [])]);
+
+  for (const pc of peers.values()) {
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+    if (sender) await sender.replaceTrack(screenTrack);
   }
+
+  screenTrack.onended = () => {
+    stopScreenShare().catch(() => {});
+  };
+}
+
+async function stopScreenShare() {
+  if (!isScreenSharing) return;
+  isScreenSharing = false;
+  screenShareBtn.textContent = "Share screen";
+
+  stopStream(screenStream);
+  screenStream = undefined;
+
+  await ensureCamera();
+  const cameraTrack = cameraStream.getVideoTracks()[0];
+  localVideo.srcObject = localStream;
+
+  for (const pc of peers.values()) {
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+    if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+  }
+}
+
+async function leave() {
+  if (socket && socket.connected) socket.emit("leave-room");
+
+  if (isScreenSharing) {
+    isScreenSharing = false;
+    screenShareBtn.textContent = "Share screen";
+    stopStream(screenStream);
+    screenStream = undefined;
+  }
+
+  for (const peerId of Array.from(peers.keys())) cleanupPeer(peerId);
+
+  stopStream(cameraStream);
+
+  cameraStream = undefined;
+  localStream = undefined;
+  localVideo.srcObject = null;
+
+  setLobbyVisible(true);
+  setStatus("Not connected");
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  window.history.replaceState({}, "", url.toString());
+}
+
+createBtn.addEventListener("click", async () => {
+  const code = generateCode();
+  meetingInfo.classList.remove("hidden");
+  meetingInfo.textContent = `Meeting code: ${code}`;
+  await join(code);
 });
 
-if (roleSelect.value === "candidate" && !enforceSEBForCandidate()) {
-  setHint("Candidate mode requires Safe Exam Browser (SEB).");
-}
+joinForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await join(codeInput.value);
+});
+
+screenShareBtn.addEventListener("click", async () => {
+  if (isScreenSharing) await stopScreenShare();
+  else await startScreenShare();
+});
+
+leaveBtn.addEventListener("click", () => {
+  leave().catch(() => {});
+});
+
+window.addEventListener("beforeunload", () => {
+  if (socket && socket.connected) socket.emit("leave-room");
+});
+
+setLobbyVisible(true);
+setStatus("Not connected");
+
+const urlCode = new URL(window.location.href).searchParams.get("code");
+if (urlCode) join(urlCode).catch(() => {});
