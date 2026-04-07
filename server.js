@@ -110,7 +110,7 @@ function requireAuth(req, res, next) {
 app.post("/api/login", requireSupabase, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const requestedRole = normalizeRole(req.body?.role);
-  if (!email || !requestedRole) return res.status(400).json({ ok: false, error: "Invalid email or role" });
+  if (!email) return res.status(400).json({ ok: false, error: "Invalid email" });
   if (!sessionSecret) return res.status(500).json({ ok: false, error: "Server not configured" });
 
   const now = new Date().toISOString();
@@ -123,25 +123,31 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   if (existingError) return res.status(500).json({ ok: false, error: "Database error" });
 
-  const role = existing?.role ? normalizeRole(existing.role) : requestedRole;
-  if (!role) return res.status(500).json({ ok: false, error: "Invalid role in database" });
-
   if (!existing) {
+    if (!requestedRole) return res.status(200).json({ ok: false, needsRole: true });
+
     const { error: insertError } = await supabase
       .from("users")
-      .insert({ email, role, created_at: now, last_seen_at: now });
+      .insert({ email, role: requestedRole, created_at: now, last_seen_at: now });
     if (insertError) return res.status(500).json({ ok: false, error: "Database error" });
-  } else {
-    const { error: updateError } = await supabase
-      .from("users")
-      .update({ last_seen_at: now })
-      .eq("email", email);
-    if (updateError) return res.status(500).json({ ok: false, error: "Database error" });
+
+    const token = signToken({ email, role: requestedRole, iat: Date.now() });
+    if (!token) return res.status(500).json({ ok: false, error: "Server not configured" });
+    return res.status(200).json({ ok: true, token, user: { email, role: requestedRole }, created: true });
   }
+
+  const role = normalizeRole(existing.role);
+  if (!role) return res.status(500).json({ ok: false, error: "Role missing in database" });
+
+  const { error: updateError } = await supabase
+    .from("users")
+    .update({ last_seen_at: now })
+    .eq("email", email);
+  if (updateError) return res.status(500).json({ ok: false, error: "Database error" });
 
   const token = signToken({ email, role, iat: Date.now() });
   if (!token) return res.status(500).json({ ok: false, error: "Server not configured" });
-  return res.status(200).json({ ok: true, token, user: { email, role } });
+  return res.status(200).json({ ok: true, token, user: { email, role }, created: false });
 });
 
 app.get("/api/me", requireAuth, (req, res) => {

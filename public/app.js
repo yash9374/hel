@@ -2,6 +2,8 @@ const statusEl = document.getElementById("status");
 const authEl = document.getElementById("auth");
 const authForm = document.getElementById("authForm");
 const emailInput = document.getElementById("emailInput");
+const roleRow = document.getElementById("roleRow");
+const authBtn = document.getElementById("authBtn");
 const authError = document.getElementById("authError");
 const lobbyEl = document.getElementById("lobby");
 const meetingEl = document.getElementById("meeting");
@@ -408,6 +410,8 @@ syncControlUI();
 
 async function initAuth() {
   setAuthed(false);
+  roleRow.classList.add("hidden");
+  authBtn.textContent = "Continue";
 
   if (authToken) {
     const res = await api("/api/me");
@@ -426,6 +430,8 @@ async function initAuth() {
   localStorage.removeItem("authToken");
   currentUser = null;
   setAuthed(false);
+  roleRow.classList.add("hidden");
+  authBtn.textContent = "Continue";
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -434,7 +440,8 @@ authForm.addEventListener("submit", async (e) => {
   authError.textContent = "";
 
   const email = String(emailInput.value || "").trim();
-  const role = new FormData(authForm).get("role");
+  const wantsCreate = !roleRow.classList.contains("hidden");
+  const role = wantsCreate ? new FormData(authForm).get("role") : undefined;
 
   const res = await api("/api/login", {
     method: "POST",
@@ -442,6 +449,11 @@ authForm.addEventListener("submit", async (e) => {
   });
 
   if (!res.ok) {
+    if (res.body?.needsRole) {
+      roleRow.classList.remove("hidden");
+      authBtn.textContent = "Create account";
+      return;
+    }
     authError.classList.remove("hidden");
     authError.textContent = res.body?.error || "Login failed";
     return;
@@ -451,6 +463,8 @@ authForm.addEventListener("submit", async (e) => {
   localStorage.setItem("authToken", authToken);
   currentUser = res.body.user;
   setAuthed(true);
+  roleRow.classList.add("hidden");
+  authBtn.textContent = "Continue";
   if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
   else createBtn.classList.remove("hidden");
 });
