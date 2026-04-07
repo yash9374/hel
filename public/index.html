@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interview Room</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel" id="joinPanel">
+        <div class="brand">Interview Room</div>
+        <div class="row">
+          <label class="label" for="roomId">Room code</label>
+          <input id="roomId" class="input" inputmode="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <label class="label" for="role">Role</label>
+          <select id="role" class="input">
+            <option value="candidate">Candidate (SEB)</option>
+            <option value="hr">Interviewer / HR</option>
+          </select>
+        </div>
+        <button id="joinBtn" class="btn primary">Join</button>
+        <div id="joinHint" class="hint"></div>
+      </section>
+
+      <section class="stage hidden" id="callStage">
+        <header class="topbar">
+          <div class="room" id="roomLabel"></div>
+          <div class="status" id="statusLabel"></div>
+        </header>
+
+        <section class="videos">
+          <div class="videoCard">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="tag">Remote</div>
+          </div>
+          <div class="videoCard self">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div class="tag">You</div>
+          </div>
+        </section>
+
+        <footer class="controls">
+          <button id="micBtn" class="control">Mic</button>
+          <button id="camBtn" class="control">Camera</button>
+          <button id="shareBtn" class="control">Share</button>
+          <button id="fsBtn" class="control">Full</button>
+          <button id="leaveBtn" class="control danger">Leave</button>
+        </footer>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

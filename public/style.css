@@ -1,0 +1,197 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  background: #0b0f14;
+  color: #e7eef7;
+}
+
+.app {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.panel {
+  width: min(520px, 100%);
+  background: #111824;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 20px;
+  margin-bottom: 14px;
+}
+
+.row {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.label {
+  font-size: 13px;
+  color: rgba(231, 238, 247, 0.78);
+}
+
+.input {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0b0f14;
+  color: #e7eef7;
+  outline: none;
+}
+
+.btn {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #172235;
+  color: #e7eef7;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn.primary {
+  background: #2a5fff;
+  border-color: rgba(42, 95, 255, 0.7);
+}
+
+.hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: rgba(231, 238, 247, 0.75);
+  min-height: 18px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.stage {
+  width: min(1100px, 100%);
+  height: min(720px, 100%);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 12px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0d141f;
+}
+
+.room {
+  font-weight: 700;
+}
+
+.status {
+  font-size: 13px;
+  color: rgba(231, 238, 247, 0.75);
+}
+
+.videos {
+  display: grid;
+  grid-template-columns: 1.4fr 0.6fr;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.videoCard {
+  position: relative;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.videoCard video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.videoCard.self {
+  max-height: 260px;
+  align-self: end;
+}
+
+.tag {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(10, 15, 20, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0d141f;
+}
+
+.control {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #162133;
+  color: #e7eef7;
+  cursor: pointer;
+  font-weight: 700;
+  min-width: 92px;
+}
+
+.control.off {
+  background: #0b0f14;
+  color: rgba(231, 238, 247, 0.7);
+}
+
+.control.danger {
+  background: #e43d3d;
+  border-color: rgba(228, 61, 61, 0.8);
+}
+
+@media (max-width: 860px) {
+  .stage {
+    height: 100%;
+  }
+  .videos {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 0.45fr;
+  }
+  .videoCard.self {
+    max-height: none;
+  }
+}
+
