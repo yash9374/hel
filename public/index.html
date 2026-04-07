@@ -34,22 +34,26 @@
         <div id="meetingInfo" class="meetingInfo hidden"></div>
       </section>
 
-      <section id="meeting" class="panel hidden">
-        <div class="controls">
-          <div class="codeBadge">
-            Code:
-            <span id="roomCodeLabel" class="mono"></span>
-          </div>
-          <button id="screenShareBtn" class="btn" type="button">Share screen</button>
-          <button id="leaveBtn" class="btn danger" type="button">Leave</button>
-        </div>
-
-        <div class="videos">
-          <div class="videoCard">
+      <section id="meeting" class="panel meetingPanel hidden">
+        <div class="meetingStage">
+          <div class="videoCard localCard" id="localCard">
             <div class="videoLabel">You</div>
+            <div id="localOff" class="videoOffOverlay hidden">Camera off</div>
             <video id="localVideo" autoplay playsinline muted></video>
           </div>
           <div id="remoteVideos" class="remoteGrid"></div>
+        </div>
+
+        <div class="meetingBar">
+          <div class="codePill">
+            Code <span id="roomCodeLabel" class="mono"></span>
+          </div>
+          <div class="meetingBarRight">
+            <button id="micBtn" class="controlBtn" type="button">Mic on</button>
+            <button id="camBtn" class="controlBtn" type="button">Camera on</button>
+            <button id="screenShareBtn" class="controlBtn" type="button">Share screen</button>
+            <button id="leaveBtn" class="controlBtn danger" type="button">Leave</button>
+          </div>
         </div>
       </section>
     </div>

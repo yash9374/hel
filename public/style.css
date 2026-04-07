@@ -6,6 +6,11 @@
   color: #111827;
 }
 
+body {
+  margin: 0;
+  background: #0b1220;
+}
+
 .header {
   display: flex;
   align-items: baseline;
@@ -17,11 +22,12 @@
 .title {
   font-size: 20px;
   font-weight: 700;
+  color: #f9fafb;
 }
 
 .status {
   font-size: 14px;
-  color: #374151;
+  color: #cbd5e1;
 }
 
 .panel {
@@ -90,30 +96,9 @@
   display: none;
 }
 
-.controls {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.codeBadge {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #f3f4f6;
-  border: 1px solid #e5e7eb;
-  font-size: 13px;
-}
-
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-weight: 700;
-}
-
-.videos {
-  display: grid;
-  gap: 12px;
 }
 
 .videoCard {
@@ -147,4 +132,90 @@ video {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
+}
+
+.meetingPanel {
+  padding: 0;
+  border-color: #111827;
+  background: #0b1220;
+  overflow: hidden;
+}
+
+.meetingStage {
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+.localCard {
+  border-color: #1f2937;
+}
+
+.videoOffOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #f9fafb;
+  font-size: 16px;
+  background: rgba(17, 24, 39, 0.7);
+  z-index: 3;
+}
+
+.meetingBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid #1f2937;
+  background: rgba(2, 6, 23, 0.9);
+  backdrop-filter: blur(10px);
+}
+
+.meetingBarRight {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.codePill {
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid #1f2937;
+  background: #0b1220;
+  color: #e5e7eb;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.controlBtn {
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: #e5e7eb;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.controlBtn:hover {
+  background: #0f172a;
+}
+
+.controlBtn.off {
+  border-color: #ef4444;
+  color: #fecaca;
+}
+
+.controlBtn.danger {
+  border-color: #ef4444;
+  background: #7f1d1d;
+  color: #fee2e2;
+}
+
+.controlBtn.danger:hover {
+  background: #991b1b;
 }

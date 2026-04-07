@@ -7,7 +7,11 @@ const codeInput = document.getElementById("codeInput");
 const meetingInfo = document.getElementById("meetingInfo");
 const roomCodeLabel = document.getElementById("roomCodeLabel");
 const localVideo = document.getElementById("localVideo");
+const localCard = document.getElementById("localCard");
+const localOff = document.getElementById("localOff");
 const remoteVideos = document.getElementById("remoteVideos");
+const micBtn = document.getElementById("micBtn");
+const camBtn = document.getElementById("camBtn");
 const screenShareBtn = document.getElementById("screenShareBtn");
 const leaveBtn = document.getElementById("leaveBtn");
 
@@ -21,6 +25,8 @@ let localStream;
 let cameraStream;
 let screenStream;
 let isScreenSharing = false;
+let micEnabled = true;
+let cameraEnabled = true;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -55,9 +61,39 @@ async function ensureCamera() {
     audio: true,
     video: { width: { ideal: 1280 }, height: { ideal: 720 } }
   });
+  for (const track of cameraStream.getAudioTracks()) track.enabled = micEnabled;
+  for (const track of cameraStream.getVideoTracks()) track.enabled = cameraEnabled;
   localStream = cameraStream;
   localVideo.srcObject = localStream;
+  syncControlUI();
   return cameraStream;
+}
+
+function syncControlUI() {
+  micBtn.classList.toggle("off", !micEnabled);
+  camBtn.classList.toggle("off", !cameraEnabled);
+
+  micBtn.textContent = micEnabled ? "Mic on" : "Mic off";
+  camBtn.textContent = cameraEnabled ? "Camera on" : "Camera off";
+
+  localOff.classList.toggle("hidden", cameraEnabled || isScreenSharing);
+  screenShareBtn.textContent = isScreenSharing ? "Stop share" : "Share screen";
+}
+
+function setMicEnabled(enabled) {
+  micEnabled = Boolean(enabled);
+  if (cameraStream) {
+    for (const track of cameraStream.getAudioTracks()) track.enabled = micEnabled;
+  }
+  syncControlUI();
+}
+
+function setCameraEnabled(enabled) {
+  cameraEnabled = Boolean(enabled);
+  if (cameraStream) {
+    for (const track of cameraStream.getVideoTracks()) track.enabled = cameraEnabled;
+  }
+  syncControlUI();
 }
 
 function ensureSocket() {
@@ -219,7 +255,7 @@ async function startScreenShare() {
   if (!screenTrack) return;
 
   isScreenSharing = true;
-  screenShareBtn.textContent = "Stop share";
+  syncControlUI();
 
   const audioTrack = localStream?.getAudioTracks()[0] ?? null;
   localVideo.srcObject = new MediaStream([screenTrack, ...(audioTrack ? [audioTrack] : [])]);
@@ -237,7 +273,7 @@ async function startScreenShare() {
 async function stopScreenShare() {
   if (!isScreenSharing) return;
   isScreenSharing = false;
-  screenShareBtn.textContent = "Share screen";
+  syncControlUI();
 
   stopStream(screenStream);
   screenStream = undefined;
@@ -257,7 +293,7 @@ async function leave() {
 
   if (isScreenSharing) {
     isScreenSharing = false;
-    screenShareBtn.textContent = "Share screen";
+    syncControlUI();
     stopStream(screenStream);
     screenStream = undefined;
   }
@@ -269,6 +305,9 @@ async function leave() {
   cameraStream = undefined;
   localStream = undefined;
   localVideo.srcObject = null;
+  micEnabled = true;
+  cameraEnabled = true;
+  syncControlUI();
 
   setLobbyVisible(true);
   setStatus("Not connected");
@@ -295,6 +334,14 @@ screenShareBtn.addEventListener("click", async () => {
   else await startScreenShare();
 });
 
+micBtn.addEventListener("click", () => {
+  setMicEnabled(!micEnabled);
+});
+
+camBtn.addEventListener("click", () => {
+  setCameraEnabled(!cameraEnabled);
+});
+
 leaveBtn.addEventListener("click", () => {
   leave().catch(() => {});
 });
@@ -305,6 +352,7 @@ window.addEventListener("beforeunload", () => {
 
 setLobbyVisible(true);
 setStatus("Not connected");
+syncControlUI();
 
 const urlCode = new URL(window.location.href).searchParams.get("code");
 if (urlCode) join(urlCode).catch(() => {});
