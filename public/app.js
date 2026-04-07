@@ -54,6 +54,25 @@ function setAuthed(isAuthed) {
   meetingEl.classList.toggle("hidden", true);
 }
 
+function isSafeExamBrowser() {
+  const ua = String(navigator.userAgent || "");
+  return /safeexambrowser|seb/i.test(ua);
+}
+
+function applyStudentJoinPolicy() {
+  const isStudent = currentUser?.role === "student";
+  const allowed = !isStudent || isSafeExamBrowser();
+
+  codeInput.disabled = !allowed;
+  const joinBtn = joinForm.querySelector('button[type="submit"]');
+  if (joinBtn) joinBtn.disabled = !allowed;
+
+  if (!allowed) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Students must open this link in Safe Exam Browser to join a meeting.";
+  }
+}
+
 function normalizeCode(code) {
   return String(code || "")
     .trim()
@@ -256,6 +275,12 @@ function cleanupPeer(peerId) {
 }
 
 async function join(code) {
+  if (currentUser?.role === "student" && !isSafeExamBrowser()) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Students must open this link in Safe Exam Browser to join a meeting.";
+    return;
+  }
+
   roomCode = normalizeCode(code);
   if (!roomCode) return;
 
@@ -401,12 +426,23 @@ leaveBtn.addEventListener("click", () => {
 });
 
 logoutBtn.addEventListener("click", () => {
+  leave().catch(() => {});
+
   authToken = "";
   localStorage.removeItem("authToken");
   currentUser = null;
+
+  if (socket) {
+    try {
+      socket.disconnect();
+    } catch {
+    }
+    socket = undefined;
+  }
+
   setAuthed(false);
   setStatus("Not connected");
-  emailInput.value = ""; // Clear the email input for the next login
+  emailInput.value = "";
 });
 
 window.addEventListener("beforeunload", () => {
@@ -429,6 +465,7 @@ async function initAuth() {
       if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
       else createBtn.classList.remove("hidden");
       setStatus(`Logged in as ${currentUser.role}`);
+      applyStudentJoinPolicy();
       const urlCode = new URL(window.location.href).searchParams.get("code");
       if (urlCode) join(urlCode).catch(() => {});
       return;
@@ -468,6 +505,7 @@ authForm.addEventListener("submit", async (e) => {
   if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
   else createBtn.classList.remove("hidden");
   setStatus(`Logged in as ${currentUser.role}`);
+  applyStudentJoinPolicy();
 });
 
 initAuth().catch(() => {});

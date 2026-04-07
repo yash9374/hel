@@ -93,6 +93,11 @@ function normalizeRole(role) {
   return null;
 }
 
+function isSafeExamBrowserUserAgent(userAgent) {
+  const ua = String(userAgent || "");
+  return /safeexambrowser|seb/i.test(ua);
+}
+
 function requireSupabase(req, res, next) {
   if (!supabase) return res.status(500).json({ ok: false, error: "Supabase not configured" });
   return next();
@@ -187,6 +192,14 @@ io.on("connection", (socket) => {
     if (typeof roomCode !== "string" || roomCode.trim().length === 0) {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid code" });
       return;
+    }
+
+    if (socket.data.user?.role === "student") {
+      const userAgent = socket.handshake.headers?.["user-agent"];
+      if (!isSafeExamBrowserUserAgent(userAgent)) {
+        if (typeof ack === "function") ack({ ok: false, error: "Students must join from Safe Exam Browser" });
+        return;
+      }
     }
 
     const normalized = roomCode.trim().toUpperCase();
