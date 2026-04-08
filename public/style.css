@@ -342,3 +342,48 @@ video {
 .controlBtn.danger:hover {
   background: #991b1b;
 }
+
+.proctorOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.75);
+  backdrop-filter: blur(6px);
+}
+
+.proctorPanel {
+  width: min(560px, 100%);
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.55);
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.proctorTitle {
+  font-weight: 800;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.proctorBody {
+  font-size: 14px;
+  color: #334155;
+  line-height: 1.35;
+}
+
+.proctorCount {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.proctorActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

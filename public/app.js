@@ -38,6 +38,7 @@ let currentUser = null;
 
 const peers = new Map();
 const remoteMedia = new Map();
+const proctor = createProctor();
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -79,6 +80,210 @@ function normalizeCode(code) {
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 10);
+}
+
+function createProctor() {
+  const state = {
+    enabled: false,
+    warnings: 0,
+    maxWarnings: 3,
+    overlay: null,
+    overlayTitle: null,
+    overlayBody: null,
+    overlayCount: null,
+    overlayBtn: null,
+    lastAlertAt: 0,
+    lastViolationAt: 0
+  };
+
+  function isStudentInMeeting() {
+    if (!state.enabled) return false;
+    if (currentUser?.role !== "student") return false;
+    if (meetingEl.classList.contains("hidden")) return false;
+    return true;
+  }
+
+  function ensureOverlay() {
+    if (state.overlay) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "proctorOverlay";
+    overlay.className = "proctorOverlay hidden";
+
+    const panel = document.createElement("div");
+    panel.className = "proctorPanel";
+
+    const title = document.createElement("div");
+    title.className = "proctorTitle";
+    title.textContent = "Proctor alert";
+
+    const body = document.createElement("div");
+    body.className = "proctorBody";
+    body.textContent = "Return to the interview window to continue.";
+
+    const count = document.createElement("div");
+    count.className = "proctorCount";
+    count.textContent = "";
+
+    const actions = document.createElement("div");
+    actions.className = "proctorActions";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn primary";
+    btn.textContent = "Return to interview";
+
+    actions.appendChild(btn);
+    panel.appendChild(title);
+    panel.appendChild(body);
+    panel.appendChild(count);
+    panel.appendChild(actions);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    state.overlay = overlay;
+    state.overlayTitle = title;
+    state.overlayBody = body;
+    state.overlayCount = count;
+    state.overlayBtn = btn;
+
+    btn.addEventListener("click", async () => {
+      hideOverlay();
+      await tryRestore();
+    });
+  }
+
+  function showOverlay(message) {
+    ensureOverlay();
+    state.overlayBody.textContent = message;
+    state.overlayCount.textContent = state.maxWarnings
+      ? `Warnings: ${state.warnings}/${state.maxWarnings}`
+      : `Warnings: ${state.warnings}`;
+    state.overlay.classList.remove("hidden");
+  }
+
+  function hideOverlay() {
+    if (!state.overlay) return;
+    state.overlay.classList.add("hidden");
+  }
+
+  async function tryRestore() {
+    try {
+      if (!document.fullscreenElement && meetingEl.requestFullscreen) {
+        await meetingEl.requestFullscreen();
+      }
+    } catch {
+    }
+    try {
+      window.focus();
+    } catch {
+    }
+  }
+
+  function throttledAlert(text) {
+    const now = Date.now();
+    if (now - state.lastAlertAt < 1200) return;
+    state.lastAlertAt = now;
+    try {
+      window.alert(text);
+    } catch {
+    }
+  }
+
+  function reportViolation(reason) {
+    if (!isStudentInMeeting()) return;
+    const now = Date.now();
+    if (now - state.lastViolationAt < 1500) return;
+    state.lastViolationAt = now;
+    state.warnings += 1;
+
+    const message = `${reason} Return to the interview window.`;
+    showOverlay(message);
+    throttledAlert(message);
+
+    if (state.maxWarnings && state.warnings >= state.maxWarnings) {
+      leave().catch(() => {});
+    }
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) reportViolation("You left the interview tab.");
+  }
+
+  function onBlur() {
+    if (document.hidden) return;
+    reportViolation("The interview window lost focus.");
+  }
+
+  function onMouseLeave() {
+    reportViolation("Your cursor left the interview window.");
+  }
+
+  function onFullscreenChange() {
+    if (!isStudentInMeeting()) return;
+    if (!document.fullscreenElement) reportViolation("Fullscreen was exited.");
+  }
+
+  function shouldBlockKey(e) {
+    const key = String(e.key || "").toLowerCase();
+    const ctrl = e.ctrlKey || e.metaKey;
+
+    if (key === "f12") return true;
+    if (ctrl && (key === "r" || key === "w" || key === "t" || key === "n")) return true;
+    if (ctrl && e.shiftKey && (key === "i" || key === "j" || key === "c")) return true;
+    if (key === "escape" && document.fullscreenElement) return true;
+    return false;
+  }
+
+  function onKeyDown(e) {
+    if (!isStudentInMeeting()) return;
+    if (!shouldBlockKey(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    reportViolation("A restricted shortcut was used.");
+  }
+
+  function onContextMenu(e) {
+    if (!isStudentInMeeting()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    reportViolation("Right click is restricted.");
+  }
+
+  function onClipboard(e) {
+    if (!isStudentInMeeting()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    reportViolation("Clipboard actions are restricted.");
+  }
+
+  async function start() {
+    state.enabled = true;
+    state.warnings = 0;
+    ensureOverlay();
+    if (currentUser?.role === "student") {
+      showOverlay("Click “Return to interview” to enter fullscreen and start the proctored session.");
+    }
+    await tryRestore();
+  }
+
+  function stop() {
+    state.enabled = false;
+    state.warnings = 0;
+    hideOverlay();
+  }
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("blur", onBlur);
+  document.addEventListener("mouseleave", onMouseLeave);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("contextmenu", onContextMenu, true);
+  document.addEventListener("copy", onClipboard, true);
+  document.addEventListener("cut", onClipboard, true);
+  document.addEventListener("paste", onClipboard, true);
+
+  return { start, stop };
 }
 
 function generateCode() {
@@ -315,6 +520,10 @@ async function join(code) {
   const url = new URL(window.location.href);
   url.searchParams.set("code", roomCode);
   window.history.replaceState({}, "", url.toString());
+
+  if (currentUser?.role === "student") {
+    proctor.start().catch(() => {});
+  }
 }
 
 function stopStream(stream) {
@@ -363,6 +572,7 @@ async function stopScreenShare() {
 }
 
 async function leave() {
+  proctor.stop();
   if (socket && socket.connected) socket.emit("leave-room");
 
   if (isScreenSharing) {
@@ -440,6 +650,7 @@ logoutBtn.addEventListener("click", () => {
   authToken = "";
   localStorage.removeItem("authToken");
   currentUser = null;
+  proctor.stop();
 
   if (socket) {
     try {
@@ -466,6 +677,7 @@ async function initAuth() {
   authToken = "";
   localStorage.removeItem("authToken");
   currentUser = null;
+  proctor.stop();
 
   setAuthed(false);
   authBtn.textContent = "Check account";
