@@ -463,29 +463,14 @@ setStatus("Not connected");
 syncControlUI();
 
 async function initAuth() {
-  setAuthed(false);
-  authBtn.textContent = "Check account";
-
-  if (authToken) {
-    const res = await api("/api/me");
-    if (res.ok) {
-      currentUser = res.body.user;
-      setAuthed(true);
-      if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
-      else createBtn.classList.remove("hidden");
-      setStatus(`Logged in as ${currentUser.role}`);
-      applyStudentJoinPolicy();
-      const urlCode = new URL(window.location.href).searchParams.get("code");
-      if (urlCode) join(urlCode).catch(() => {});
-      return;
-    }
-  }
-
   authToken = "";
   localStorage.removeItem("authToken");
   currentUser = null;
+
   setAuthed(false);
   authBtn.textContent = "Check account";
+  setStatus("Not connected");
+  applyStudentJoinPolicy();
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -515,6 +500,8 @@ authForm.addEventListener("submit", async (e) => {
   else createBtn.classList.remove("hidden");
   setStatus(`Logged in as ${currentUser.role}`);
   applyStudentJoinPolicy();
+  const urlCode = new URL(window.location.href).searchParams.get("code");
+  if (urlCode) join(urlCode).catch(() => {});
 });
 
 initAuth().catch(() => {});
