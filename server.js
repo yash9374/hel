@@ -29,11 +29,12 @@ app.get("/healthz", (_req, res) => {
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const sessionSecret = process.env.SESSION_SECRET;
-const examAppId = process.env.EXAM_APP_ID;
-const examAppSecret = process.env.EXAM_APP_SECRET;
+const sebBrowserExamKey = process.env.SEB_BROWSER_EXAM_KEY;
+const sebConfigKey = process.env.SEB_CONFIG_KEY;
 
 const hasSupabase = Boolean(supabaseUrl && supabaseServiceKey);
 const supabase = hasSupabase ? createClient(supabaseUrl, supabaseServiceKey) : null;
+const sebSessions = new Map();
 
 function base64UrlEncode(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
@@ -100,29 +101,52 @@ function isSafeExamBrowserUserAgent(userAgent) {
   return /safeexambrowser|seb/i.test(ua);
 }
 
-function shouldRequireExamApp() {
-  return Boolean(examAppId && examAppSecret);
+function shouldRequireSebKeyCheck() {
+  return Boolean(sebBrowserExamKey);
 }
 
-function expectedExamAppSignature() {
-  const sig = crypto.createHmac("sha256", examAppSecret).update(String(examAppId || "")).digest();
-  return base64UrlEncode(sig);
+function getRequestOrigin(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  if (!host) return null;
+  return `${proto}://${host}`;
 }
 
-function verifyExamAppAuth(auth) {
-  if (!shouldRequireExamApp()) return true;
-  const providedId = String(auth?.examAppId || "");
-  const providedSig = String(auth?.examAppSig || "");
-  if (!providedId || !providedSig) return false;
-  if (providedId !== examAppId) return false;
+function getFullRequestUrl(req) {
+  const origin = getRequestOrigin(req);
+  if (!origin) return null;
+  return `${origin}${req.originalUrl || ""}`;
+}
 
-  const expected = expectedExamAppSignature();
-  if (expected.length !== providedSig.length) return false;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(providedSig));
-  } catch {
-    return false;
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function verifySebHeaders({ headers, requestUrl }) {
+  if (!shouldRequireSebKeyCheck()) return true;
+  if (!requestUrl) return false;
+
+  const requestHash = String(headers["x-safeexambrowser-requesthash"] || "").trim().toLowerCase();
+  const configHash = String(headers["x-safeexambrowser-configkeyhash"] || "").trim().toLowerCase();
+
+  const expectedRequestHash = sha256Hex(`${requestUrl}${sebBrowserExamKey}`);
+  if (!requestHash || requestHash !== expectedRequestHash) return false;
+
+  if (sebConfigKey) {
+    const expectedConfigHash = sha256Hex(`${requestUrl}${sebConfigKey}`);
+    if (!configHash || configHash !== expectedConfigHash) return false;
   }
+
+  return true;
+}
+
+function requireSebForStudents(req, res, next) {
+  if (!shouldRequireSebKeyCheck()) return next();
+  if (req.user?.role !== "student") return next();
+  const requestUrl = getFullRequestUrl(req);
+  const ok = verifySebHeaders({ headers: req.headers, requestUrl });
+  if (!ok) return res.status(403).json({ ok: false, error: "Students must use the provided exam browser configuration (.seb)" });
+  return next();
 }
 
 function requireSupabase(req, res, next) {
@@ -136,7 +160,14 @@ function requireAuth(req, res, next) {
   const payload = verifyToken(token);
   if (!payload?.email || !payload?.role) return res.status(401).json({ ok: false, error: "Unauthorized" });
   req.user = { email: payload.email, role: payload.role };
+  req.authToken = token;
   return next();
+}
+
+function normalizeIp(ip) {
+  const v = String(ip || "").trim();
+  if (v.startsWith("::ffff:")) return v.slice("::ffff:".length);
+  return v;
 }
 
 app.post("/api/login", requireSupabase, async (req, res) => {
@@ -172,6 +203,13 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
 app.get("/api/me", requireAuth, (req, res) => {
   res.status(200).json({ ok: true, user: req.user });
+});
+
+app.post("/api/seb-check", requireAuth, requireSebForStudents, (req, res) => {
+  if (req.authToken) {
+    sebSessions.set(req.authToken, { ip: normalizeIp(req.ip), at: Date.now() });
+  }
+  res.status(200).json({ ok: true });
 });
 
 function generateMeetingCode() {
@@ -211,7 +249,15 @@ io.use((socket, next) => {
   const payload = verifyToken(token);
   if (!payload?.email || !payload?.role) return next(new Error("unauthorized"));
   socket.data.user = { email: payload.email, role: payload.role };
-  socket.data.examAppOk = verifyExamAppAuth(socket.handshake.auth);
+  socket.data.authToken = token;
+  const proto = String(socket.handshake.headers?.["x-forwarded-proto"] || (socket.request?.connection?.encrypted ? "https" : "http"))
+    .split(",")[0]
+    .trim();
+  const host = String(socket.handshake.headers?.["x-forwarded-host"] || socket.handshake.headers?.host || "")
+    .split(",")[0]
+    .trim();
+  const requestUrl = host ? `${proto}://${host}${socket.handshake.url || ""}` : null;
+  socket.data.sebOk = verifySebHeaders({ headers: socket.handshake.headers || {}, requestUrl });
   return next();
 });
 
@@ -229,9 +275,20 @@ io.on("connection", (socket) => {
         return;
       }
 
-      if (shouldRequireExamApp() && !socket.data.examAppOk) {
-        if (typeof ack === "function") ack({ ok: false, error: "Students must join from the exam app" });
-        return;
+      if (shouldRequireSebKeyCheck()) {
+        const token = socket.data.authToken;
+        const entry = token ? sebSessions.get(token) : null;
+        const socketIp = normalizeIp(socket.handshake.address || socket.request?.socket?.remoteAddress || socket.request?.connection?.remoteAddress);
+        const recentlyValidated = Boolean(
+          entry && entry.ip && socketIp && entry.ip === socketIp && Date.now() - entry.at < 10 * 60 * 1000
+        );
+
+        if (!recentlyValidated && !socket.data.sebOk) {
+          if (typeof ack === "function") {
+            ack({ ok: false, error: "Students must use the provided exam browser configuration (.seb)" });
+          }
+          return;
+        }
       }
     }
 

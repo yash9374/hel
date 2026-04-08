@@ -59,16 +59,9 @@ function isSafeExamBrowser() {
   return /safeexambrowser|seb/i.test(ua);
 }
 
-function getExamAppAuth() {
-  const examAppId = String(window.__EXAM_APP_ID__ || "").trim();
-  const examAppSig = String(window.__EXAM_APP_SIG__ || "").trim();
-  return { examAppId, examAppSig, ok: Boolean(examAppId && examAppSig) };
-}
-
 function applyStudentJoinPolicy() {
   const isStudent = currentUser?.role === "student";
-  const { ok: hasExamAppAuth } = getExamAppAuth();
-  const allowed = !isStudent || (isSafeExamBrowser() && hasExamAppAuth);
+  const allowed = !isStudent || isSafeExamBrowser();
 
   codeInput.disabled = !allowed;
   const joinBtn = joinForm.querySelector('button[type="submit"]');
@@ -76,7 +69,7 @@ function applyStudentJoinPolicy() {
 
   if (!allowed) {
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = "Students must open this link in the exam app to join a meeting.";
+    meetingInfo.textContent = "Students must open this link using the provided exam browser configuration (.seb).";
   }
 }
 
@@ -152,9 +145,8 @@ function setCameraEnabled(enabled) {
 
 function ensureSocket() {
   if (socket) return socket;
-  const { examAppId, examAppSig } = getExamAppAuth();
   socket = window.io({
-    auth: { token: authToken, examAppId, examAppSig }
+    auth: { token: authToken }
   });
 
   socket.on("connect", () => setStatus(`Connected (${socket.id})`));
@@ -284,10 +276,16 @@ function cleanupPeer(peerId) {
 
 async function join(code) {
   if (currentUser?.role === "student") {
-    const { ok: hasExamAppAuth } = getExamAppAuth();
-    if (!isSafeExamBrowser() || !hasExamAppAuth) {
+    if (!isSafeExamBrowser()) {
       meetingInfo.classList.remove("hidden");
-      meetingInfo.textContent = "Students must open this link in the exam app to join a meeting.";
+      meetingInfo.textContent = "Students must open this link using the provided exam browser configuration (.seb).";
+      return;
+    }
+
+    const sebCheck = await api("/api/seb-check", { method: "POST" });
+    if (!sebCheck.ok) {
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = sebCheck.body?.error || "Students must use the provided exam browser configuration (.seb).";
       return;
     }
   }
