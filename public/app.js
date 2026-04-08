@@ -728,7 +728,14 @@ authForm.addEventListener("submit", async (e) => {
   setStatus(`Logged in as ${currentUser.role}`);
   applyStudentJoinPolicy();
   const urlCode = new URL(window.location.href).searchParams.get("code");
-  if (urlCode) join(urlCode).catch(() => {});
+  if (urlCode) {
+    const normalized = normalizeCode(urlCode);
+    if (normalized) {
+      codeInput.value = normalized;
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = "Meeting code loaded from link. Click Join to enter the meeting.";
+    }
+  }
 });
 
 initAuth().catch(() => {});
