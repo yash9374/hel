@@ -9,6 +9,8 @@
 body {
   margin: 0;
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background:
     radial-gradient(900px 520px at 15% 10%, rgba(59, 130, 246, 0.28), transparent 55%),
     radial-gradient(900px 520px at 85% 0%, rgba(168, 85, 247, 0.22), transparent 55%),
@@ -105,6 +107,7 @@ body {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .divider {
@@ -117,10 +120,18 @@ body {
   border: 1px solid #d1d5db;
   background: #f9fafb;
   color: #111827;
-  padding: 10px 12px;
-  border-radius: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
   cursor: pointer;
   font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
   transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
@@ -129,31 +140,62 @@ body {
   transform: translateY(-1px);
 }
 
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.18);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .btn.primary {
   border-color: #2563eb;
-  background: #2563eb;
+  background: linear-gradient(180deg, #3b82f6, #2563eb);
   color: white;
   box-shadow: 0 10px 18px rgba(37, 99, 235, 0.25);
 }
 
 .btn.primary:hover {
-  background: #1d4ed8;
+  background: linear-gradient(180deg, #2563eb, #1d4ed8);
 }
 
 .btn.danger {
   border-color: #ef4444;
   background: #fee2e2;
+  color: #7f1d1d;
+}
+
+.btn.danger:hover {
+  background: #fecaca;
 }
 
 .input {
   flex: 1;
   min-width: 220px;
   border: 1px solid #d1d5db;
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 11px 12px;
   font-size: 14px;
+  line-height: 1.15;
   background: rgba(255, 255, 255, 0.9);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.input::placeholder {
+  color: #64748b;
+}
+
+.input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  background: rgba(241, 245, 249, 0.85);
 }
 
 .input:focus {
@@ -166,6 +208,10 @@ body {
   margin-top: 12px;
   font-size: 14px;
   color: #0f172a;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(248, 250, 252, 0.85);
 }
 
 .hidden {
