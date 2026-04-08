@@ -182,6 +182,7 @@ function createProctor() {
   }
 
   function throttledAlert(text) {
+    if (isSafeExamBrowser()) return;
     const now = Date.now();
     if (now - state.lastAlertAt < 1200) return;
     state.lastAlertAt = now;
@@ -213,10 +214,12 @@ function createProctor() {
 
   function onBlur() {
     if (document.hidden) return;
+    if (isSafeExamBrowser()) return;
     reportViolation("The interview window lost focus.");
   }
 
   function onMouseLeave() {
+    if (isSafeExamBrowser()) return;
     reportViolation("Your cursor left the interview window.");
   }
 
@@ -319,6 +322,7 @@ async function ensureCamera() {
   for (const track of cameraStream.getVideoTracks()) track.enabled = cameraEnabled;
   localStream = cameraStream;
   localVideo.srcObject = localStream;
+  localVideo.play().catch(() => {});
   syncControlUI();
   return cameraStream;
 }
@@ -547,15 +551,26 @@ function stopStream(stream) {
 
 async function startScreenShare() {
   if (isScreenSharing) return;
-  screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 60 } },
+      audio: false
+    });
+  } catch (err) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = String(err?.message || err || "Screen sharing failed");
+    return;
+  }
   const screenTrack = screenStream.getVideoTracks()[0];
   if (!screenTrack) return;
 
   isScreenSharing = true;
   syncControlUI();
 
-  const audioTrack = localStream?.getAudioTracks()[0] ?? null;
-  localVideo.srcObject = new MediaStream([screenTrack, ...(audioTrack ? [audioTrack] : [])]);
+  const audioTrack = cameraStream?.getAudioTracks()[0] ?? null;
+  localStream = new MediaStream([screenTrack, ...(audioTrack ? [audioTrack] : [])]);
+  localVideo.srcObject = localStream;
+  localVideo.play().catch(() => {});
 
   for (const pc of peers.values()) {
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
@@ -577,7 +592,9 @@ async function stopScreenShare() {
 
   await ensureCamera();
   const cameraTrack = cameraStream.getVideoTracks()[0];
+  localStream = cameraStream;
   localVideo.srcObject = localStream;
+  localVideo.play().catch(() => {});
 
   for (const pc of peers.values()) {
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
