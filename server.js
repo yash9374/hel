@@ -29,6 +29,8 @@ app.get("/healthz", (_req, res) => {
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const sessionSecret = process.env.SESSION_SECRET;
+const examAppId = process.env.EXAM_APP_ID;
+const examAppSecret = process.env.EXAM_APP_SECRET;
 
 const hasSupabase = Boolean(supabaseUrl && supabaseServiceKey);
 const supabase = hasSupabase ? createClient(supabaseUrl, supabaseServiceKey) : null;
@@ -96,6 +98,31 @@ function normalizeRole(role) {
 function isSafeExamBrowserUserAgent(userAgent) {
   const ua = String(userAgent || "");
   return /safeexambrowser|seb/i.test(ua);
+}
+
+function shouldRequireExamApp() {
+  return Boolean(examAppId && examAppSecret);
+}
+
+function expectedExamAppSignature() {
+  const sig = crypto.createHmac("sha256", examAppSecret).update(String(examAppId || "")).digest();
+  return base64UrlEncode(sig);
+}
+
+function verifyExamAppAuth(auth) {
+  if (!shouldRequireExamApp()) return true;
+  const providedId = String(auth?.examAppId || "");
+  const providedSig = String(auth?.examAppSig || "");
+  if (!providedId || !providedSig) return false;
+  if (providedId !== examAppId) return false;
+
+  const expected = expectedExamAppSignature();
+  if (expected.length !== providedSig.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(providedSig));
+  } catch {
+    return false;
+  }
 }
 
 function requireSupabase(req, res, next) {
@@ -184,6 +211,7 @@ io.use((socket, next) => {
   const payload = verifyToken(token);
   if (!payload?.email || !payload?.role) return next(new Error("unauthorized"));
   socket.data.user = { email: payload.email, role: payload.role };
+  socket.data.examAppOk = verifyExamAppAuth(socket.handshake.auth);
   return next();
 });
 
@@ -197,7 +225,12 @@ io.on("connection", (socket) => {
     if (socket.data.user?.role === "student") {
       const userAgent = socket.handshake.headers?.["user-agent"];
       if (!isSafeExamBrowserUserAgent(userAgent)) {
-        if (typeof ack === "function") ack({ ok: false, error: "Students must join from Safe Exam Browser" });
+        if (typeof ack === "function") ack({ ok: false, error: "Students must join from the exam app" });
+        return;
+      }
+
+      if (shouldRequireExamApp() && !socket.data.examAppOk) {
+        if (typeof ack === "function") ack({ ok: false, error: "Students must join from the exam app" });
         return;
       }
     }

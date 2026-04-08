@@ -59,9 +59,16 @@ function isSafeExamBrowser() {
   return /safeexambrowser|seb/i.test(ua);
 }
 
+function getExamAppAuth() {
+  const examAppId = String(window.__EXAM_APP_ID__ || "").trim();
+  const examAppSig = String(window.__EXAM_APP_SIG__ || "").trim();
+  return { examAppId, examAppSig, ok: Boolean(examAppId && examAppSig) };
+}
+
 function applyStudentJoinPolicy() {
   const isStudent = currentUser?.role === "student";
-  const allowed = !isStudent || isSafeExamBrowser();
+  const { ok: hasExamAppAuth } = getExamAppAuth();
+  const allowed = !isStudent || (isSafeExamBrowser() && hasExamAppAuth);
 
   codeInput.disabled = !allowed;
   const joinBtn = joinForm.querySelector('button[type="submit"]');
@@ -69,7 +76,7 @@ function applyStudentJoinPolicy() {
 
   if (!allowed) {
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = "Students must open this link in Safe Exam Browser to join a meeting.";
+    meetingInfo.textContent = "Students must open this link in the exam app to join a meeting.";
   }
 }
 
@@ -145,8 +152,9 @@ function setCameraEnabled(enabled) {
 
 function ensureSocket() {
   if (socket) return socket;
+  const { examAppId, examAppSig } = getExamAppAuth();
   socket = window.io({
-    auth: { token: authToken }
+    auth: { token: authToken, examAppId, examAppSig }
   });
 
   socket.on("connect", () => setStatus(`Connected (${socket.id})`));
@@ -275,10 +283,13 @@ function cleanupPeer(peerId) {
 }
 
 async function join(code) {
-  if (currentUser?.role === "student" && !isSafeExamBrowser()) {
-    meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = "Students must open this link in Safe Exam Browser to join a meeting.";
-    return;
+  if (currentUser?.role === "student") {
+    const { ok: hasExamAppAuth } = getExamAppAuth();
+    if (!isSafeExamBrowser() || !hasExamAppAuth) {
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = "Students must open this link in the exam app to join a meeting.";
+      return;
+    }
   }
 
   roomCode = normalizeCode(code);
