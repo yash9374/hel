@@ -246,15 +246,18 @@ body {
 
 video {
   width: 100%;
-  height: auto;
+  height: 100%;
   display: block;
   background: #111827;
+  object-fit: cover;
 }
 
 .remoteGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scroll-snap-type: x proximity;
 }
 
 .meetingPanel {
@@ -262,16 +265,33 @@ video {
   border-color: #111827;
   background: #0b1220;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 560px;
 }
 
 .meetingStage {
   padding: 12px;
   display: grid;
+  grid-template-rows: 1fr auto;
   gap: 12px;
+  flex: 1;
+  min-height: 0;
 }
 
 .localCard {
   border-color: #1f2937;
+  min-height: 0;
+}
+
+.remoteGrid .videoCard {
+  width: 240px;
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+.remoteGrid video {
+  aspect-ratio: 16 / 9;
 }
 
 .videoOffOverlay {
@@ -294,6 +314,7 @@ video {
   border-top: 1px solid #1f2937;
   background: rgba(2, 6, 23, 0.9);
   backdrop-filter: blur(10px);
+  z-index: 5;
 }
 
 .meetingBarRight {
@@ -341,6 +362,18 @@ video {
 
 .controlBtn.danger:hover {
   background: #991b1b;
+}
+
+#meeting:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  border-radius: 0;
+  margin: 0;
+}
+
+#meeting:fullscreen .meetingStage {
+  padding: 14px;
 }
 
 .proctorOverlay {
