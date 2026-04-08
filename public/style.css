@@ -265,6 +265,9 @@ video {
   border-color: #111827;
   background: #0b1220;
   overflow: hidden;
+}
+
+.meetingPanel:not(.hidden) {
   display: flex;
   flex-direction: column;
 }
