@@ -39,6 +39,7 @@ let currentUser = null;
 const peers = new Map();
 const remoteMedia = new Map();
 const proctor = createProctor();
+const localCardHome = { parent: localCard.parentElement, nextSibling: localCard.nextSibling };
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -265,6 +266,7 @@ function createProctor() {
       showOverlay("Click “Return to interview” to enter fullscreen and start the proctored session.");
     }
     await tryRestore();
+    if (document.fullscreenElement) hideOverlay();
   }
 
   function stop() {
@@ -330,6 +332,18 @@ function syncControlUI() {
 
   localOff.classList.toggle("hidden", cameraEnabled || isScreenSharing);
   screenShareBtn.textContent = isScreenSharing ? "Stop share" : "Share screen";
+  meetingEl.classList.toggle("sharing", isScreenSharing);
+}
+
+function mountMeetingUI() {
+  document.body.classList.add("inMeeting");
+  if (localCard.parentElement !== remoteVideos) remoteVideos.prepend(localCard);
+}
+
+function unmountMeetingUI() {
+  document.body.classList.remove("inMeeting");
+  if (localCardHome.parent) localCardHome.parent.insertBefore(localCard, localCardHome.nextSibling);
+  meetingEl.classList.remove("sharing");
 }
 
 function setMicEnabled(enabled) {
@@ -499,7 +513,6 @@ async function join(code) {
   if (!roomCode) return;
 
   codeInput.value = roomCode;
-  setLobbyVisible(false);
   setStatus("Requesting camera/mic…");
 
   await ensureCamera();
@@ -512,11 +525,12 @@ async function join(code) {
   if (!joinResult.ok) {
     meetingInfo.classList.remove("hidden");
     meetingInfo.textContent = joinResult.error || "Failed to join meeting";
-    setLobbyVisible(true);
     return;
   }
 
+  setLobbyVisible(false);
   roomCodeLabel.textContent = roomCode;
+  mountMeetingUI();
   const url = new URL(window.location.href);
   url.searchParams.set("code", roomCode);
   window.history.replaceState({}, "", url.toString());
@@ -592,6 +606,7 @@ async function leave() {
   micEnabled = true;
   cameraEnabled = true;
   syncControlUI();
+  unmountMeetingUI();
 
   setLobbyVisible(true);
   setStatus("Not connected");
