@@ -322,6 +322,17 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack({ ok: true, peerIds, roomCode: normalized });
   });
 
+  socket.on("screen-share", ({ sharing }, ack) => {
+    const room = socket.data.room;
+    if (!room) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const isSharing = Boolean(sharing);
+    socket.to(room).emit("screen-share", { peerId: socket.id, sharing: isSharing });
+    if (typeof ack === "function") ack({ ok: true });
+  });
+
   socket.on("signal", ({ to, payload }) => {
     if (typeof to !== "string") return;
     io.to(to).emit("signal", { from: socket.id, payload });

@@ -38,8 +38,10 @@ let currentUser = null;
 
 const peers = new Map();
 const remoteMedia = new Map();
+const remoteCards = new Map();
 const proctor = createProctor();
 const localCardHome = { parent: localCard.parentElement, nextSibling: localCard.nextSibling };
+let presenterPeerId = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -336,7 +338,6 @@ function syncControlUI() {
 
   localOff.classList.toggle("hidden", cameraEnabled || isScreenSharing);
   screenShareBtn.textContent = isScreenSharing ? "Stop share" : "Share screen";
-  meetingEl.classList.toggle("sharing", isScreenSharing);
 }
 
 function mountMeetingUI() {
@@ -347,7 +348,29 @@ function mountMeetingUI() {
 function unmountMeetingUI() {
   document.body.classList.remove("inMeeting");
   if (localCardHome.parent) localCardHome.parent.insertBefore(localCard, localCardHome.nextSibling);
-  meetingEl.classList.remove("sharing");
+  clearPresenter();
+}
+
+function clearPresenter() {
+  presenterPeerId = null;
+  meetingEl.classList.remove("presenting");
+  for (const el of remoteVideos.querySelectorAll(".videoCard.presenter")) el.classList.remove("presenter");
+}
+
+function getCardForPeer(peerId) {
+  if (!peerId) return null;
+  if (peerId === socket?.id) return localCard;
+  return remoteCards.get(peerId)?.card ?? null;
+}
+
+function setPresenter(peerId) {
+  const card = getCardForPeer(peerId);
+  if (!card) return;
+  presenterPeerId = peerId;
+  meetingEl.classList.add("presenting");
+  for (const el of remoteVideos.querySelectorAll(".videoCard.presenter")) el.classList.remove("presenter");
+  card.classList.add("presenter");
+  if (card.parentElement === remoteVideos) remoteVideos.prepend(card);
 }
 
 function setMicEnabled(enabled) {
@@ -388,6 +411,14 @@ function ensureSocket() {
 
   socket.on("peer-left", ({ peerId }) => {
     cleanupPeer(peerId);
+  });
+
+  socket.on("screen-share", ({ peerId, sharing }) => {
+    if (sharing) {
+      setPresenter(peerId);
+      return;
+    }
+    if (presenterPeerId === peerId) clearPresenter();
   });
 
   socket.on("signal", async ({ from, payload }) => {
@@ -432,6 +463,7 @@ function createRemoteCard(peerId) {
   card.appendChild(video);
   remoteVideos.appendChild(card);
 
+  remoteCards.set(peerId, { card, video });
   return { card, video };
 }
 
@@ -493,8 +525,10 @@ function cleanupPeer(peerId) {
 
   peers.delete(peerId);
   remoteMedia.delete(peerId);
+  remoteCards.delete(peerId);
   const el = document.getElementById(`remote-${peerId}`);
   if (el) el.remove();
+  if (presenterPeerId === peerId) clearPresenter();
 }
 
 async function join(code) {
@@ -535,13 +569,10 @@ async function join(code) {
   setLobbyVisible(false);
   roomCodeLabel.textContent = roomCode;
   mountMeetingUI();
+  clearPresenter();
   const url = new URL(window.location.href);
   url.searchParams.set("code", roomCode);
   window.history.replaceState({}, "", url.toString());
-
-  if (currentUser?.role === "student") {
-    proctor.start().catch(() => {});
-  }
 }
 
 function stopStream(stream) {
@@ -571,6 +602,10 @@ async function startScreenShare() {
   localStream = new MediaStream([screenTrack, ...(audioTrack ? [audioTrack] : [])]);
   localVideo.srcObject = localStream;
   localVideo.play().catch(() => {});
+  if (socket?.connected) {
+    ensureSocket().emit("screen-share", { sharing: true });
+    setPresenter(socket.id);
+  }
 
   for (const pc of peers.values()) {
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
@@ -595,6 +630,10 @@ async function stopScreenShare() {
   localStream = cameraStream;
   localVideo.srcObject = localStream;
   localVideo.play().catch(() => {});
+  if (socket?.connected) {
+    ensureSocket().emit("screen-share", { sharing: false });
+    if (presenterPeerId === socket.id) clearPresenter();
+  }
 
   for (const pc of peers.values()) {
     const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
@@ -604,6 +643,7 @@ async function stopScreenShare() {
 
 async function leave() {
   proctor.stop();
+  clearPresenter();
   if (socket && socket.connected) socket.emit("leave-room");
 
   if (isScreenSharing) {

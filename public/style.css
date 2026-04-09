@@ -325,13 +325,14 @@ body.inMeeting #meeting.panel {
   border-radius: 0;
 }
 
-#meeting.sharing #localCard {
+#meeting.presenting .videoCard.presenter {
   grid-column: 1 / -1;
   min-height: 60vh;
 }
 
-#meeting.sharing #localCard video {
+#meeting.presenting .videoCard.presenter video {
   object-fit: contain;
+  background: #0b1220;
 }
 
 .meetingBarRight {
