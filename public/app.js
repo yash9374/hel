@@ -20,6 +20,7 @@ const micBtn = document.getElementById("micBtn");
 const camBtn = document.getElementById("camBtn");
 const screenShareBtn = document.getElementById("screenShareBtn");
 const leaveBtn = document.getElementById("leaveBtn");
+const meetingStageEl = meetingEl.querySelector(".meetingStage");
 
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -42,6 +43,7 @@ const remoteCards = new Map();
 const proctor = createProctor();
 const localCardHome = { parent: localCard.parentElement, nextSibling: localCard.nextSibling };
 let presenterPeerId = null;
+let presenterStageEl = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -343,18 +345,38 @@ function syncControlUI() {
 function mountMeetingUI() {
   document.body.classList.add("inMeeting");
   if (localCard.parentElement !== remoteVideos) remoteVideos.prepend(localCard);
+  ensurePresenterStage();
 }
 
 function unmountMeetingUI() {
   document.body.classList.remove("inMeeting");
-  if (localCardHome.parent) localCardHome.parent.insertBefore(localCard, localCardHome.nextSibling);
   clearPresenter();
+  if (localCardHome.parent) localCardHome.parent.insertBefore(localCard, localCardHome.nextSibling);
+}
+
+function ensurePresenterStage() {
+  if (presenterStageEl) return presenterStageEl;
+  const el = document.createElement("div");
+  el.id = "presenterStage";
+  el.className = "presenterStage hidden";
+  if (meetingStageEl) meetingStageEl.prepend(el);
+  presenterStageEl = el;
+  return el;
 }
 
 function clearPresenter() {
   presenterPeerId = null;
   meetingEl.classList.remove("presenting");
+  if (presenterStageEl) {
+    const staged = presenterStageEl.querySelector(".videoCard");
+    if (staged) remoteVideos.prepend(staged);
+    presenterStageEl.classList.add("hidden");
+  }
   for (const el of remoteVideos.querySelectorAll(".videoCard.presenter")) el.classList.remove("presenter");
+  if (localCard.parentElement !== remoteVideos) remoteVideos.prepend(localCard);
+  for (const { card } of remoteCards.values()) {
+    if (card.parentElement !== remoteVideos) remoteVideos.appendChild(card);
+  }
 }
 
 function getCardForPeer(peerId) {
@@ -364,13 +386,17 @@ function getCardForPeer(peerId) {
 }
 
 function setPresenter(peerId) {
+  ensurePresenterStage();
   const card = getCardForPeer(peerId);
   if (!card) return;
+  if (presenterPeerId === peerId) return;
   presenterPeerId = peerId;
   meetingEl.classList.add("presenting");
   for (const el of remoteVideos.querySelectorAll(".videoCard.presenter")) el.classList.remove("presenter");
+  if (presenterStageEl && card.parentElement !== presenterStageEl) presenterStageEl.replaceChildren(card);
+  if (presenterStageEl) presenterStageEl.classList.remove("hidden");
   card.classList.add("presenter");
-  if (card.parentElement === remoteVideos) remoteVideos.prepend(card);
+  if (localCard !== card && localCard.parentElement !== remoteVideos) remoteVideos.prepend(localCard);
 }
 
 function setMicEnabled(enabled) {
