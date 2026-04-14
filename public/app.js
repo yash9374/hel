@@ -111,7 +111,7 @@ function applyStudentJoinPolicy() {
 
   if (!allowed) {
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = "Students must open this link using the provided exam browser configuration (.seb).";
+    meetingInfo.textContent = "Open in the specified app to continue.";
   }
 }
 
@@ -790,14 +790,14 @@ async function join(code) {
   if (currentUser?.role === "student") {
     if (!isSafeExamBrowser()) {
       meetingInfo.classList.remove("hidden");
-      meetingInfo.textContent = "Students must open this link using the provided exam browser configuration (.seb).";
+      meetingInfo.textContent = "Open in the specified app to continue.";
       return;
     }
 
     const sebCheck = await api("/api/seb-check", { method: "POST" });
     if (!sebCheck.ok) {
       meetingInfo.classList.remove("hidden");
-      meetingInfo.textContent = sebCheck.body?.error || "Students must use the provided exam browser configuration (.seb).";
+      meetingInfo.textContent = sebCheck.body?.error || "Open in the specified app to continue.";
       return;
     }
   }

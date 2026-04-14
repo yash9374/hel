@@ -255,7 +255,7 @@ function requireSebForStudents(req, res, next) {
   if (req.user?.role !== "student") return next();
   const requestUrl = getFullRequestUrl(req);
   const ok = verifySebHeaders({ headers: req.headers, requestUrl });
-  if (!ok) return res.status(403).json({ ok: false, error: "Students must use the provided exam browser configuration (.seb)" });
+  if (!ok) return res.status(403).json({ ok: false, error: "Open in the specified app to continue." });
   return next();
 }
 
@@ -405,7 +405,7 @@ io.on("connection", (socket) => {
     if (socket.data.user?.role === "student") {
       const userAgent = socket.handshake.headers?.["user-agent"];
       if (!isSafeExamBrowserUserAgent(userAgent)) {
-        if (typeof ack === "function") ack({ ok: false, error: "Students must join from the exam app" });
+        if (typeof ack === "function") ack({ ok: false, error: "Open in the specified app to continue." });
         return;
       }
 
@@ -419,7 +419,7 @@ io.on("connection", (socket) => {
 
         if (!recentlyValidated && !socket.data.sebOk) {
           if (typeof ack === "function") {
-            ack({ ok: false, error: "Students must use the provided exam browser configuration (.seb)" });
+            ack({ ok: false, error: "Open in the specified app to continue." });
           }
           return;
         }
