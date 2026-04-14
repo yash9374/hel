@@ -36,13 +36,78 @@ const hasSupabase = Boolean(supabaseUrl && supabaseServiceKey);
 const supabase = hasSupabase ? createClient(supabaseUrl, supabaseServiceKey) : null;
 const sebSessions = new Map();
 const dashboardRoomPrefix = "dashboard:";
+const scheduleTable = "interview_schedule";
+let scheduleDbChecked = false;
+let scheduleDbAvailable = false;
 const scheduleByInterviewer = new Map();
 const studentSocketIdsByEmail = new Map();
+const interviewerSocketIdsByEmail = new Map();
 const studentActiveRoomByEmail = new Map();
 const admissionByKey = new Map();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+async function ensureScheduleDbAvailable() {
+  if (!supabase) return false;
+  if (scheduleDbChecked) return scheduleDbAvailable;
+  scheduleDbChecked = true;
+  const { error } = await supabase.from(scheduleTable).select("id").limit(1);
+  if (error) {
+    scheduleDbAvailable = false;
+    return false;
+  }
+  scheduleDbAvailable = true;
+  return true;
+}
+
+async function getUserByEmail(email) {
+  if (!supabase) return { ok: false, error: "Supabase not configured" };
+  const normalized = normalizeEmail(email);
+  if (!normalized) return { ok: false, error: "Invalid email" };
+
+  const primary = await supabase
+    .from("users")
+    .select("email, role, name")
+    .eq("email", normalized)
+    .maybeSingle();
+
+  if (!primary.error) return { ok: true, user: primary.data };
+
+  const msg = String(primary.error?.message || "");
+  if (!msg.toLowerCase().includes("column") || !msg.toLowerCase().includes("name")) {
+    return { ok: false, error: "Database error" };
+  }
+
+  const fallback = await supabase
+    .from("users")
+    .select("email, role")
+    .eq("email", normalized)
+    .maybeSingle();
+  if (fallback.error) return { ok: false, error: "Database error" };
+  return { ok: true, user: fallback.data };
+}
+
+async function getUsersByEmails(emails) {
+  if (!supabase) return new Map();
+  const unique = Array.from(new Set((emails || []).map((e) => normalizeEmail(e)).filter(Boolean)));
+  if (unique.length === 0) return new Map();
+
+  const primary = await supabase.from("users").select("email, name, role").in("email", unique);
+  if (!primary.error) {
+    const map = new Map();
+    for (const row of primary.data || []) map.set(String(row.email).toLowerCase(), row);
+    return map;
+  }
+
+  const msg = String(primary.error?.message || "");
+  if (!msg.toLowerCase().includes("column") || !msg.toLowerCase().includes("name")) return new Map();
+
+  const fallback = await supabase.from("users").select("email, role").in("email", unique);
+  const map = new Map();
+  for (const row of fallback.data || []) map.set(String(row.email).toLowerCase(), row);
+  return map;
 }
 
 function normalizeIsoDateTime(value) {
@@ -54,11 +119,15 @@ function normalizeIsoDateTime(value) {
 }
 
 function admissionKey(roomCode, studentEmail) {
-  return `${String(roomCode || "").trim().toUpperCase()}|${String(studentEmail || "").trim().toLowerCase()}`;
+  const code = String(roomCode || "").trim().toUpperCase();
+  const email = String(studentEmail || "").trim().toLowerCase();
+  if (!code || !email) return null;
+  return `${code}|${email}`;
 }
 
 function isStudentAdmitted(roomCode, studentEmail) {
   const key = admissionKey(roomCode, studentEmail);
+  if (!key) return false;
   const entry = admissionByKey.get(key);
   if (!entry) return false;
   if (Date.now() > entry.expiresAt) {
@@ -90,21 +159,62 @@ function getInterviewerSchedule(interviewerEmail) {
   });
 }
 
-function computeDashboard(interviewerEmail) {
-  const schedule = getInterviewerSchedule(interviewerEmail).map((entry) => {
+function computeScheduleEntryStatus({ entry, online, activeRoom, admitted }) {
+  if (entry.doneAt) return "done";
+  if (entry.roomCode && activeRoom && activeRoom === entry.roomCode) return "in_room";
+  if (admitted) return "admitted";
+  if (online) return "waiting";
+  return "scheduled";
+}
+
+async function listScheduleEntriesForInterviewer(interviewerEmail) {
+  const email = String(interviewerEmail || "").trim().toLowerCase();
+  if (!email) return [];
+
+  const useDb = await ensureScheduleDbAvailable();
+  if (!useDb) return getInterviewerSchedule(email);
+
+  const { data, error } = await supabase
+    .from(scheduleTable)
+    .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+    .eq("interviewer_email", email)
+    .order("scheduled_at", { ascending: true });
+  if (error) return getInterviewerSchedule(email);
+
+  return (data || []).map((row) => ({
+    id: row.id,
+    studentEmail: String(row.student_email || "").toLowerCase(),
+    scheduledAt: row.scheduled_at,
+    roomCode: row.room_code ? String(row.room_code || "").toUpperCase() : null,
+    createdAt: row.created_at,
+    doneAt: row.done_at,
+    admittedAt: row.admitted_at
+  }));
+}
+
+async function computeDashboard(interviewerEmail) {
+  const scheduleEntries = await listScheduleEntriesForInterviewer(interviewerEmail);
+  const usersMap = await getUsersByEmails([
+    interviewerEmail,
+    ...scheduleEntries.map((e) => e.studentEmail)
+  ]);
+
+  const schedule = scheduleEntries.map((entry) => {
     const online = studentSocketIdsByEmail.get(entry.studentEmail)?.size ? true : false;
     const activeRoom = studentActiveRoomByEmail.get(entry.studentEmail) || null;
     const admitted = isStudentAdmitted(entry.roomCode, entry.studentEmail);
-    const status = entry.doneAt
-      ? "done"
-      : activeRoom === entry.roomCode
-        ? "in_room"
-        : admitted
-          ? "admitted"
-          : online
-            ? "waiting"
-            : "scheduled";
-    return { ...entry, online, admitted, activeRoom, status };
+    const status = computeScheduleEntryStatus({ entry, online, activeRoom, admitted });
+    const studentProfile = usersMap.get(String(entry.studentEmail || "").toLowerCase());
+    const interviewerProfile = usersMap.get(String(interviewerEmail || "").toLowerCase());
+    return {
+      ...entry,
+      studentName: studentProfile?.name || null,
+      interviewerName: interviewerProfile?.name || null,
+      online,
+      admitted,
+      activeRoom,
+      status
+    };
   });
 
   const byStudent = new Map(schedule.map((s) => [s.studentEmail, s]));
@@ -116,28 +226,68 @@ function computeDashboard(interviewerEmail) {
   return { schedule, unassigned };
 }
 
-function emitDashboard(interviewerEmail) {
+async function emitDashboard(interviewerEmail) {
   const email = String(interviewerEmail || "").trim().toLowerCase();
   if (!email) return;
-  io.to(`${dashboardRoomPrefix}${email}`).emit("dashboard-update", computeDashboard(email));
+  const payload = await computeDashboard(email);
+  io.to(`${dashboardRoomPrefix}${email}`).emit("dashboard-update", payload);
 }
 
-function emitDashboardsForAllInterviewers() {
-  for (const interviewerEmail of scheduleByInterviewer.keys()) emitDashboard(interviewerEmail);
-}
-
-function emitStudentStatus(studentEmail) {
-  const email = String(studentEmail || "").trim().toLowerCase();
-  if (!email) return;
-  const scheduleEntries = [];
-  for (const [interviewerEmail, list] of scheduleByInterviewer.entries()) {
-    for (const entry of list) {
-      if (entry.studentEmail === email) scheduleEntries.push({ interviewerEmail, ...entry });
+function emitDashboardsForConnectedInterviewers() {
+  for (const interviewerEmail of interviewerSocketIdsByEmail.keys()) {
+    emitDashboard(interviewerEmail).catch(() => {});
+  }
+  if (interviewerSocketIdsByEmail.size === 0) {
+    for (const interviewerEmail of scheduleByInterviewer.keys()) {
+      emitDashboard(interviewerEmail).catch(() => {});
     }
   }
+}
+
+async function emitStudentStatus(studentEmail) {
+  const email = String(studentEmail || "").trim().toLowerCase();
+  if (!email) return;
+  const useDb = await ensureScheduleDbAvailable();
+  let scheduleEntries = [];
+  if (useDb) {
+    const { data, error } = await supabase
+      .from(scheduleTable)
+      .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+      .eq("student_email", email)
+      .order("scheduled_at", { ascending: true });
+    if (!error) {
+      const interviewerEmails = (data || []).map((r) => String(r.interviewer_email || "").toLowerCase());
+      const usersMap = await getUsersByEmails(interviewerEmails);
+      scheduleEntries = (data || []).map((row) => {
+        const interviewerEmail = String(row.interviewer_email || "").toLowerCase();
+        const interviewerProfile = usersMap.get(interviewerEmail);
+        return {
+          id: row.id,
+          interviewerEmail,
+          interviewerName: interviewerProfile?.name || null,
+          studentEmail: String(row.student_email || "").toLowerCase(),
+          scheduledAt: row.scheduled_at,
+          roomCode: row.room_code ? String(row.room_code || "").toUpperCase() : null,
+          createdAt: row.created_at,
+          doneAt: row.done_at,
+          admittedAt: row.admitted_at
+        };
+      });
+    }
+  }
+
+  if (!useDb || scheduleEntries.length === 0) {
+    for (const [interviewerEmail, list] of scheduleByInterviewer.entries()) {
+      for (const entry of list) {
+        if (entry.studentEmail === email) scheduleEntries.push({ interviewerEmail, ...entry });
+      }
+    }
+  }
+
   const admittedRooms = [];
   for (const entry of scheduleEntries) {
-    if (isStudentAdmitted(entry.roomCode, email)) admittedRooms.push(entry.roomCode);
+    if (!entry.roomCode) continue;
+    if (entry.admittedAt || isStudentAdmitted(entry.roomCode, email)) admittedRooms.push(entry.roomCode);
   }
   const socketIds = studentSocketIdsByEmail.get(email);
   if (!socketIds?.size) return;
@@ -285,14 +435,13 @@ app.post("/api/login", requireSupabase, async (req, res) => {
   if (!email) return res.status(400).json({ ok: false, error: "Invalid email" });
   if (!sessionSecret) return res.status(500).json({ ok: false, error: "Server not configured" });
 
-  const { data: existing, error: existingError } = await supabase
-    .from("users")
-    .select("email, role")
-    .eq("email", email)
-    .maybeSingle();
+  const existingResult = await getUserByEmail(email);
+  if (!existingResult.ok) {
+    const status = existingResult.error === "Account not found" ? 404 : 500;
+    return res.status(status).json({ ok: false, error: existingResult.error });
+  }
 
-  if (existingError) return res.status(500).json({ ok: false, error: "Database error" });
-
+  const existing = existingResult.user;
   if (!existing) return res.status(404).json({ ok: false, error: "Account not found" });
 
   const role = normalizeRole(existing.role);
@@ -314,7 +463,7 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   const token = signToken({ email, role, iat: Date.now() });
   if (!token) return res.status(500).json({ ok: false, error: "Server not configured" });
-  return res.status(200).json({ ok: true, token, user: { email, role } });
+  return res.status(200).json({ ok: true, token, user: { email, role, name: existing.name || null } });
 });
 
 app.get("/api/me", requireAuth, (req, res) => {
@@ -335,44 +484,21 @@ function generateMeetingCode() {
   return out;
 }
 
-async function ensureMeetingExists({ code, createdBy }) {
-  if (!supabase) return { ok: true, code };
-  const normalized = String(code || "").trim().toUpperCase();
-  if (!normalized) return { ok: false, error: "Invalid code" };
-
-  const { data: existing, error: existsError } = await supabase
-    .from("meetings")
-    .select("code")
-    .eq("code", normalized)
-    .maybeSingle();
-  if (existsError) return { ok: false, error: "Database error" };
-  if (existing) return { ok: true, code: normalized };
-
-  const { error: insertError } = await supabase
-    .from("meetings")
-    .insert({ code: normalized, created_by: createdBy, created_at: nowIso() });
-  if (insertError) return { ok: false, error: "Database error" };
-  return { ok: true, code: normalized };
-}
-
-async function createMeetingCodeFor(createdBy) {
+async function createMeetingCodeForSchedule({ interviewerEmail }) {
+  const useDb = await ensureScheduleDbAvailable();
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const code = generateMeetingCode();
-    const ensured = await ensureMeetingExists({ code, createdBy });
-    if (ensured.ok) return { ok: true, code: ensured.code };
-    if (ensured.error !== "Database error") continue;
-    return ensured;
+    if (!useDb) return { ok: true, code };
+    const { data: existing, error } = await supabase
+      .from(scheduleTable)
+      .select("id")
+      .eq("room_code", code)
+      .limit(1);
+    if (error) return { ok: false, error: "Database error" };
+    if (!existing?.length) return { ok: true, code };
   }
   return { ok: false, error: "Failed to create meeting" };
 }
-
-app.post("/api/create-meeting", requireSupabase, requireAuth, async (req, res) => {
-  if (req.user.role !== "interviewer") return res.status(403).json({ ok: false, error: "Forbidden" });
-
-  const created = await createMeetingCodeFor(req.user.email);
-  if (!created.ok) return res.status(500).json({ ok: false, error: created.error || "Failed to create meeting" });
-  return res.status(200).json({ ok: true, code: created.code });
-});
 
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
@@ -398,8 +524,13 @@ io.on("connection", (socket) => {
   if (userRole === "student" && userEmail) {
     if (!studentSocketIdsByEmail.has(userEmail)) studentSocketIdsByEmail.set(userEmail, new Set());
     studentSocketIdsByEmail.get(userEmail).add(socket.id);
-    emitStudentStatus(userEmail);
-    emitDashboardsForAllInterviewers();
+    emitStudentStatus(userEmail).catch(() => {});
+    emitDashboardsForConnectedInterviewers();
+  }
+
+  if (userRole === "interviewer" && userEmail) {
+    if (!interviewerSocketIdsByEmail.has(userEmail)) interviewerSocketIdsByEmail.set(userEmail, new Set());
+    interviewerSocketIdsByEmail.get(userEmail).add(socket.id);
   }
 
   socket.on("join-room", async ({ roomCode }, ack) => {
@@ -437,7 +568,22 @@ io.on("connection", (socket) => {
 
     if (socket.data.user?.role === "student") {
       const email = String(socket.data.user?.email || "").trim().toLowerCase();
-      if (!email || !isStudentAdmitted(normalized, email)) {
+      let admitted = false;
+      if (email) {
+        const useDb = await ensureScheduleDbAvailable();
+        if (useDb) {
+          const { data, error } = await supabase
+            .from(scheduleTable)
+            .select("id")
+            .eq("student_email", email)
+            .eq("room_code", normalized)
+            .not("admitted_at", "is", null)
+            .limit(1);
+          admitted = !error && Boolean(data?.length);
+        }
+        if (!admitted) admitted = isStudentAdmitted(normalized, email);
+      }
+      if (!email || !admitted) {
         if (typeof ack === "function") ack({ ok: false, error: "Waiting for interviewer approval" });
         return;
       }
@@ -447,18 +593,6 @@ io.on("connection", (socket) => {
     if (currentSize >= 3) {
       if (typeof ack === "function") ack({ ok: false, error: "Room is full (max 3 participants)" });
       return;
-    }
-
-    if (supabase) {
-      const { data: meeting, error } = await supabase
-        .from("meetings")
-        .select("code")
-        .eq("code", normalized)
-        .maybeSingle();
-      if (error || !meeting) {
-        if (typeof ack === "function") ack({ ok: false, error: "Meeting not found" });
-        return;
-      }
     }
 
     socket.join(room);
@@ -476,8 +610,8 @@ io.on("connection", (socket) => {
       const email = String(socket.data.user?.email || "").trim().toLowerCase();
       if (email) {
         studentActiveRoomByEmail.set(email, normalized);
-        emitStudentStatus(email);
-        emitDashboardsForAllInterviewers();
+        emitStudentStatus(email).catch(() => {});
+        emitDashboardsForConnectedInterviewers();
       }
     }
 
@@ -509,8 +643,8 @@ io.on("connection", (socket) => {
       const email = String(socket.data.user?.email || "").trim().toLowerCase();
       if (email && studentActiveRoomByEmail.get(email) === socket.data.roomCode) {
         studentActiveRoomByEmail.delete(email);
-        emitStudentStatus(email);
-        emitDashboardsForAllInterviewers();
+        emitStudentStatus(email).catch(() => {});
+        emitDashboardsForConnectedInterviewers();
       }
     }
     socket.data.room = undefined;
@@ -527,9 +661,14 @@ io.on("connection", (socket) => {
     }
     socket.join(`${dashboardRoomPrefix}${interviewerEmail}`);
     if (!scheduleByInterviewer.has(interviewerEmail)) scheduleByInterviewer.set(interviewerEmail, []);
-    const dash = computeDashboard(interviewerEmail);
-    socket.emit("dashboard-update", dash);
-    if (typeof ack === "function") ack({ ok: true, dashboard: dash });
+    computeDashboard(interviewerEmail)
+      .then((dash) => {
+        socket.emit("dashboard-update", dash);
+        if (typeof ack === "function") ack({ ok: true, dashboard: dash });
+      })
+      .catch(() => {
+        if (typeof ack === "function") ack({ ok: false, error: "Failed to load dashboard" });
+      });
   });
 
   socket.on("schedule-add", async ({ studentEmail, scheduledAt }, ack) => {
@@ -548,54 +687,234 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid scheduled time" });
       return;
     }
-    const created = await createMeetingCodeFor(interviewerEmail);
-    if (!created.ok) {
-      if (typeof ack === "function") ack({ ok: false, error: created.error || "Failed to create meeting" });
-      return;
+
+    if (supabase) {
+      const studentResult = await getUserByEmail(sEmail);
+      if (!studentResult.ok || !studentResult.user) {
+        if (typeof ack === "function") ack({ ok: false, error: "Student account not found" });
+        return;
+      }
+      const role = normalizeRole(studentResult.user.role);
+      if (role !== "student") {
+        if (typeof ack === "function") ack({ ok: false, error: "Email is not a student account" });
+        return;
+      }
     }
+
     const entry = {
       id: crypto.randomUUID(),
       studentEmail: sEmail,
+      interviewerEmail,
       scheduledAt: iso,
-      roomCode: created.code,
+      roomCode: null,
       createdAt: nowIso(),
+      admittedAt: null,
       doneAt: null
     };
-    upsertScheduleEntry(interviewerEmail, entry);
-    emitDashboard(interviewerEmail);
-    emitStudentStatus(sEmail);
+
+    const useDb = await ensureScheduleDbAvailable();
+    if (useDb) {
+      const { data, error } = await supabase
+        .from(scheduleTable)
+        .insert({
+          student_email: sEmail,
+          interviewer_email: interviewerEmail,
+          scheduled_at: iso,
+          created_at: entry.createdAt
+        })
+        .select("id")
+        .maybeSingle();
+      if (!error && data?.id) entry.id = data.id;
+      if (error) upsertScheduleEntry(interviewerEmail, entry);
+    } else {
+      upsertScheduleEntry(interviewerEmail, entry);
+    }
+
+    emitDashboard(interviewerEmail).catch(() => {});
+    emitStudentStatus(sEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true, entry });
   });
 
-  socket.on("schedule-admit", ({ scheduleId }, ack) => {
+  socket.on("schedule-join", async ({ scheduleId }, ack) => {
     const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
     if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
       return;
     }
+
+    const admit = async ({ roomCode, studentEmail }) => {
+      const key = admissionKey(roomCode, studentEmail);
+      if (key) {
+        admissionByKey.set(key, {
+          admittedBy: interviewerEmail,
+          admittedAt: Date.now(),
+          expiresAt: Date.now() + 45 * 60 * 1000
+        });
+      }
+      const socketIds = studentSocketIdsByEmail.get(studentEmail);
+      if (socketIds?.size) {
+        for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode, scheduleId });
+      }
+    };
+
+    const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+    if (useDb) {
+      const { data, error } = await supabase
+        .from(scheduleTable)
+        .select("id, student_email, room_code")
+        .eq("id", scheduleId)
+        .eq("interviewer_email", interviewerEmail)
+        .maybeSingle();
+      if (!error && data) {
+        const existingCode = data.room_code ? String(data.room_code || "").toUpperCase() : null;
+        let roomCode = existingCode;
+        if (!roomCode) {
+          const created = await createMeetingCodeForSchedule({ interviewerEmail });
+          if (!created.ok) {
+            if (typeof ack === "function") ack({ ok: false, error: created.error || "Failed to create meeting" });
+            return;
+          }
+          roomCode = created.code;
+          await supabase
+            .from(scheduleTable)
+            .update({ room_code: roomCode, admitted_at: nowIso() })
+            .eq("id", scheduleId)
+            .eq("interviewer_email", interviewerEmail);
+        } else {
+          await supabase
+            .from(scheduleTable)
+            .update({ admitted_at: nowIso() })
+            .eq("id", scheduleId)
+            .eq("interviewer_email", interviewerEmail);
+        }
+
+        const studentEmail = String(data.student_email || "").toLowerCase();
+        await admit({ roomCode, studentEmail });
+        emitDashboard(interviewerEmail).catch(() => {});
+        emitStudentStatus(studentEmail).catch(() => {});
+        if (typeof ack === "function") ack({ ok: true, roomCode });
+        return;
+      }
+    }
+
+    const list = scheduleByInterviewer.get(interviewerEmail) || [];
+    const idx = list.findIndex((e) => e.id === scheduleId);
+    if (idx < 0) {
+      if (typeof ack === "function") ack({ ok: false, error: "Schedule not found" });
+      return;
+    }
+
+    const current = list[idx];
+    let code = current.roomCode || null;
+    if (!code) {
+      const created = await createMeetingCodeForSchedule({ interviewerEmail });
+      if (!created.ok) {
+        if (typeof ack === "function") ack({ ok: false, error: created.error || "Failed to create meeting" });
+        return;
+      }
+      code = created.code;
+      list[idx] = { ...current, roomCode: code, admittedAt: nowIso() };
+    } else {
+      list[idx] = { ...current, admittedAt: nowIso() };
+    }
+    await admit({ roomCode: code, studentEmail: current.studentEmail });
+    emitDashboard(interviewerEmail).catch(() => {});
+    emitStudentStatus(current.studentEmail).catch(() => {});
+    if (typeof ack === "function") ack({ ok: true, roomCode: code });
+  });
+
+  socket.on("schedule-admit", async ({ scheduleId }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+
+    const admit = async (entry) => {
+      const key = admissionKey(entry.roomCode, entry.studentEmail);
+      admissionByKey.set(key, {
+        admittedBy: interviewerEmail,
+        admittedAt: Date.now(),
+        expiresAt: Date.now() + 45 * 60 * 1000
+      });
+      const socketIds = studentSocketIdsByEmail.get(entry.studentEmail);
+      if (socketIds?.size) {
+        for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode: entry.roomCode, scheduleId: entry.id });
+      }
+      emitDashboard(interviewerEmail).catch(() => {});
+      emitStudentStatus(entry.studentEmail).catch(() => {});
+      if (typeof ack === "function") ack({ ok: true, roomCode: entry.roomCode });
+    };
+
+    const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+    if (useDb) {
+      const { data, error } = await supabase
+        .from(scheduleTable)
+        .select("id, student_email, room_code")
+        .eq("id", scheduleId)
+        .eq("interviewer_email", interviewerEmail)
+        .maybeSingle();
+      if (!error && data) {
+        const roomCode = data.room_code ? String(data.room_code || "").toUpperCase() : null;
+        if (!roomCode) {
+          if (typeof ack === "function") ack({ ok: false, error: "Join to create a code first" });
+          return;
+        }
+        await supabase
+          .from(scheduleTable)
+          .update({ admitted_at: nowIso() })
+          .eq("id", scheduleId)
+          .eq("interviewer_email", interviewerEmail);
+        await admit({
+          id: data.id,
+          studentEmail: String(data.student_email || "").toLowerCase(),
+          roomCode
+        });
+        return;
+      }
+    }
+
     const list = scheduleByInterviewer.get(interviewerEmail) || [];
     const entry = list.find((e) => e.id === scheduleId);
     if (!entry) {
       if (typeof ack === "function") ack({ ok: false, error: "Schedule not found" });
       return;
     }
-    const key = admissionKey(entry.roomCode, entry.studentEmail);
-    admissionByKey.set(key, { admittedBy: interviewerEmail, admittedAt: Date.now(), expiresAt: Date.now() + 45 * 60 * 1000 });
-    const socketIds = studentSocketIdsByEmail.get(entry.studentEmail);
-    if (socketIds?.size) {
-      for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode: entry.roomCode, scheduleId: entry.id });
+    if (!entry.roomCode) {
+      if (typeof ack === "function") ack({ ok: false, error: "Join to create a code first" });
+      return;
     }
-    emitDashboard(interviewerEmail);
-    emitStudentStatus(entry.studentEmail);
-    if (typeof ack === "function") ack({ ok: true, roomCode: entry.roomCode });
+    admit(entry).catch(() => {});
   });
 
-  socket.on("schedule-done", ({ scheduleId }, ack) => {
+  socket.on("schedule-done", async ({ scheduleId }, ack) => {
     const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
     if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
       return;
     }
+
+    const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+    if (useDb) {
+      const { data, error } = await supabase
+        .from(scheduleTable)
+        .select("student_email")
+        .eq("id", scheduleId)
+        .eq("interviewer_email", interviewerEmail)
+        .maybeSingle();
+      if (!error && data) {
+        await supabase
+          .from(scheduleTable)
+          .update({ done_at: nowIso() })
+          .eq("id", scheduleId)
+          .eq("interviewer_email", interviewerEmail);
+        emitDashboard(interviewerEmail).catch(() => {});
+        emitStudentStatus(String(data.student_email || "").toLowerCase()).catch(() => {});
+        if (typeof ack === "function") ack({ ok: true });
+        return;
+      }
+    }
+
     const list = scheduleByInterviewer.get(interviewerEmail) || [];
     const idx = list.findIndex((e) => e.id === scheduleId);
     if (idx < 0) {
@@ -604,8 +923,8 @@ io.on("connection", (socket) => {
     }
     const updated = { ...list[idx], doneAt: nowIso() };
     list[idx] = updated;
-    emitDashboard(interviewerEmail);
-    emitStudentStatus(updated.studentEmail);
+    emitDashboard(interviewerEmail).catch(() => {});
+    emitStudentStatus(updated.studentEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true });
   });
 
@@ -617,8 +936,16 @@ io.on("connection", (socket) => {
         set.delete(socket.id);
         if (set.size === 0) studentSocketIdsByEmail.delete(userEmail);
       }
-      emitStudentStatus(userEmail);
-      emitDashboardsForAllInterviewers();
+      emitStudentStatus(userEmail).catch(() => {});
+      emitDashboardsForConnectedInterviewers();
+    }
+
+    if (userRole === "interviewer" && userEmail) {
+      const set = interviewerSocketIdsByEmail.get(userEmail);
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) interviewerSocketIdsByEmail.delete(userEmail);
+      }
     }
   });
 });

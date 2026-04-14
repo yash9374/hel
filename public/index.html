@@ -25,22 +25,8 @@
 
       <section id="lobby" class="panel">
         <div class="row">
-          <button id="createBtn" class="btn primary" type="button">Create meeting</button>
           <button id="logoutBtn" class="btn danger" type="button">Logout</button>
         </div>
-
-        <div class="divider">or</div>
-
-        <form id="joinForm" class="row">
-          <input
-            id="codeInput"
-            class="input"
-            autocomplete="off"
-            placeholder="Enter meeting code"
-            maxlength="10"
-          />
-          <button class="btn" type="submit">Join</button>
-        </form>
 
         <div id="studentWaiting" class="waitingCard hidden">
           <div class="waitingTitle">Waiting room</div>
@@ -49,19 +35,36 @@
         </div>
 
         <div id="interviewerDashboard" class="dashboard hidden">
-          <div class="dashboardTitle">Interview Dashboard</div>
+          <div class="dashboardTitle">Interviewer</div>
 
-          <form id="scheduleForm" class="row">
-            <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
-            <input id="scheduleTimeInput" class="input" type="datetime-local" />
-            <button class="btn primary" type="submit">Add slot</button>
-          </form>
+          <div class="tabs">
+            <button id="tabScheduleBtn" class="tabBtn active" type="button">Schedule meeting</button>
+            <button id="tabJoinBtn" class="tabBtn" type="button">Join meeting</button>
+          </div>
 
-          <div class="divider">Scheduled interviews</div>
-          <div id="scheduleList" class="dashList"></div>
+          <div id="tabSchedule" class="tabPanel">
+            <form id="scheduleForm" class="row">
+              <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
+              <input id="scheduleTimeInput" class="input" type="datetime-local" />
+              <button class="btn primary" type="submit">Add slot</button>
+            </form>
+          </div>
 
-          <div class="divider">Online (no slot)</div>
-          <div id="unassignedList" class="dashList"></div>
+          <div id="tabJoin" class="tabPanel hidden">
+            <form id="joinForm" class="row">
+              <input
+                id="codeInput"
+                class="input"
+                autocomplete="off"
+                placeholder="Enter meeting code"
+                maxlength="10"
+              />
+              <button class="btn" type="submit">Join</button>
+            </form>
+
+            <div class="divider">Scheduled interviews</div>
+            <div id="scheduleList" class="dashList"></div>
+          </div>
         </div>
 
         <div id="meetingInfo" class="meetingInfo hidden"></div>

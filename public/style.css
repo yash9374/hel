@@ -252,6 +252,29 @@ body {
   color: #0f172a;
 }
 
+.tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tabBtn {
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  background: rgba(255, 255, 255, 0.8);
+  color: #0f172a;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.tabBtn.active {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: rgba(219, 234, 254, 0.95);
+  color: #1e3a8a;
+}
+
 .dashList {
   display: grid;
   gap: 10px;
