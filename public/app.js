@@ -11,6 +11,15 @@ const joinForm = document.getElementById("joinForm");
 const logoutBtn = document.getElementById("logoutBtn");
 const codeInput = document.getElementById("codeInput");
 const meetingInfo = document.getElementById("meetingInfo");
+const studentWaitingCard = document.getElementById("studentWaiting");
+const studentWaitingBody = document.getElementById("studentWaitingBody");
+const studentWaitingMeta = document.getElementById("studentWaitingMeta");
+const interviewerDashboardEl = document.getElementById("interviewerDashboard");
+const scheduleForm = document.getElementById("scheduleForm");
+const studentEmailInput = document.getElementById("studentEmailInput");
+const scheduleTimeInput = document.getElementById("scheduleTimeInput");
+const scheduleList = document.getElementById("scheduleList");
+const unassignedList = document.getElementById("unassignedList");
 const roomCodeLabel = document.getElementById("roomCodeLabel");
 const localVideo = document.getElementById("localVideo");
 const localCard = document.getElementById("localCard");
@@ -36,6 +45,9 @@ let micEnabled = true;
 let cameraEnabled = true;
 let authToken = localStorage.getItem("authToken") || "";
 let currentUser = null;
+let lastDashboard = null;
+let lastStudentStatus = null;
+let autoJoinAttempted = new Set();
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -58,6 +70,30 @@ function setAuthed(isAuthed) {
   authEl.classList.toggle("hidden", isAuthed);
   lobbyEl.classList.toggle("hidden", !isAuthed);
   meetingEl.classList.toggle("hidden", true);
+}
+
+function formatLocalTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso || "");
+  return d.toLocaleString();
+}
+
+function clearChildren(el) {
+  if (!el) return;
+  el.replaceChildren();
+}
+
+function applyRoleUI() {
+  const role = currentUser?.role;
+  const isStudent = role === "student";
+  const isInterviewer = role === "interviewer";
+
+  if (isInterviewer) createBtn.classList.remove("hidden");
+  else createBtn.classList.add("hidden");
+
+  joinForm.classList.toggle("hidden", isStudent);
+  studentWaitingCard.classList.toggle("hidden", !isStudent);
+  interviewerDashboardEl.classList.toggle("hidden", !isInterviewer);
 }
 
 function isSafeExamBrowser() {
@@ -269,11 +305,11 @@ function createProctor() {
     state.enabled = true;
     state.warnings = 0;
     ensureOverlay();
-    if (currentUser?.role === "student") {
+    if (currentUser?.role === "student" && !isSafeExamBrowser()) {
       showOverlay("Click “Return to interview” to enter fullscreen and start the proctored session.");
     }
     await tryRestore();
-    if (document.fullscreenElement) hideOverlay();
+    if (document.fullscreenElement || isSafeExamBrowser()) hideOverlay();
   }
 
   function stop() {
@@ -425,6 +461,24 @@ function ensureSocket() {
   socket.on("disconnect", () => setStatus("Disconnected"));
   socket.on("connect_error", () => setStatus("Connection error"));
 
+  socket.on("dashboard-update", (payload) => {
+    lastDashboard = payload || null;
+    renderDashboard();
+  });
+
+  socket.on("student-status", (payload) => {
+    lastStudentStatus = payload || null;
+    renderStudentWaiting();
+  });
+
+  socket.on("admitted", async ({ roomCode: admittedCode }) => {
+    const code = normalizeCode(admittedCode);
+    if (!code) return;
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = `Interviewer allowed you to join. Joining ${code}…`;
+    await join(code);
+  });
+
   socket.on("existing-peers", async ({ peerIds, roomCode: rc }) => {
     roomCode = rc;
     roomCodeLabel.textContent = roomCode;
@@ -470,6 +524,181 @@ function ensureSocket() {
   });
 
   return socket;
+}
+
+function resetSocket() {
+  lastDashboard = null;
+  lastStudentStatus = null;
+  autoJoinAttempted = new Set();
+
+  if (!socket) return;
+  try {
+    socket.disconnect();
+  } catch {
+  }
+  socket = undefined;
+}
+
+function statusPillClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "in_room" || s === "done") return "good";
+  if (s === "waiting" || s === "admitted") return "warn";
+  if (s === "scheduled") return "";
+  return "bad";
+}
+
+function renderDashboard() {
+  if (currentUser?.role !== "interviewer") return;
+  const dash = lastDashboard;
+  clearChildren(scheduleList);
+  clearChildren(unassignedList);
+  if (!dash) return;
+
+  const items = Array.isArray(dash.schedule) ? dash.schedule : [];
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "dashItem";
+    empty.textContent = "No scheduled interviews yet.";
+    scheduleList.appendChild(empty);
+  } else {
+    for (const entry of items) {
+      const row = document.createElement("div");
+      row.className = "dashItem";
+
+      const left = document.createElement("div");
+      left.className = "dashLeft";
+
+      const primary = document.createElement("div");
+      primary.className = "dashPrimary";
+      primary.textContent = `${entry.studentEmail || "student"} · ${formatLocalTime(entry.scheduledAt)}`;
+
+      const secondary = document.createElement("div");
+      secondary.className = "dashSecondary";
+      secondary.textContent = `Code ${entry.roomCode || ""} · ${entry.online ? "online" : "offline"}`;
+
+      left.appendChild(primary);
+      left.appendChild(secondary);
+
+      const actions = document.createElement("div");
+      actions.className = "dashActions";
+
+      const statusPill = document.createElement("div");
+      statusPill.className = `pill ${statusPillClass(entry.status)}`;
+      statusPill.textContent = String(entry.status || "scheduled").replace(/_/g, " ");
+      actions.appendChild(statusPill);
+
+      const admitBtn = document.createElement("button");
+      admitBtn.type = "button";
+      admitBtn.className = "btn";
+      admitBtn.textContent = "Admit";
+      admitBtn.disabled = !entry.online || entry.status === "done" || entry.status === "in_room";
+      admitBtn.addEventListener("click", async () => {
+        meetingInfo.classList.add("hidden");
+        const res = await new Promise((resolve) => {
+          ensureSocket().emit("schedule-admit", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
+        });
+        if (!res.ok) {
+          meetingInfo.classList.remove("hidden");
+          meetingInfo.textContent = res.error || "Failed to admit student";
+          return;
+        }
+        meetingInfo.classList.remove("hidden");
+        meetingInfo.textContent = `Admitted ${entry.studentEmail}.`;
+      });
+      actions.appendChild(admitBtn);
+
+      const joinBtn = document.createElement("button");
+      joinBtn.type = "button";
+      joinBtn.className = "btn primary";
+      joinBtn.textContent = "Join room";
+      joinBtn.addEventListener("click", async () => {
+        meetingInfo.classList.add("hidden");
+        await join(entry.roomCode);
+      });
+      actions.appendChild(joinBtn);
+
+      const doneBtn = document.createElement("button");
+      doneBtn.type = "button";
+      doneBtn.className = "btn";
+      doneBtn.textContent = "Done";
+      doneBtn.disabled = entry.status === "done";
+      doneBtn.addEventListener("click", async () => {
+        const res = await new Promise((resolve) => {
+          ensureSocket().emit("schedule-done", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
+        });
+        if (!res.ok) {
+          meetingInfo.classList.remove("hidden");
+          meetingInfo.textContent = res.error || "Failed to mark done";
+        }
+      });
+      actions.appendChild(doneBtn);
+
+      row.appendChild(left);
+      row.appendChild(actions);
+      scheduleList.appendChild(row);
+    }
+  }
+
+  const unassigned = Array.isArray(dash.unassigned) ? dash.unassigned : [];
+  if (unassigned.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "dashItem";
+    empty.textContent = "No unassigned students online.";
+    unassignedList.appendChild(empty);
+  } else {
+    for (const u of unassigned) {
+      const row = document.createElement("div");
+      row.className = "dashItem";
+      const left = document.createElement("div");
+      left.className = "dashLeft";
+      const primary = document.createElement("div");
+      primary.className = "dashPrimary";
+      primary.textContent = u.email;
+      const secondary = document.createElement("div");
+      secondary.className = "dashSecondary";
+      secondary.textContent = u.activeRoom ? `In room ${u.activeRoom}` : "In lobby";
+      left.appendChild(primary);
+      left.appendChild(secondary);
+      row.appendChild(left);
+      const pill = document.createElement("div");
+      pill.className = "pill warn";
+      pill.textContent = "online";
+      row.appendChild(pill);
+      unassignedList.appendChild(row);
+    }
+  }
+}
+
+function renderStudentWaiting() {
+  if (currentUser?.role !== "student") return;
+  const status = lastStudentStatus;
+  if (!status) {
+    studentWaitingBody.textContent = "Waiting for interviewer…";
+    studentWaitingMeta.textContent = "";
+    return;
+  }
+
+  const schedule = Array.isArray(status.schedule) ? status.schedule : [];
+  const admittedRooms = Array.isArray(status.admittedRooms) ? status.admittedRooms : [];
+  const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  const next = sorted[0] || null;
+
+  if (next) {
+    studentWaitingBody.textContent = `Your interview time: ${formatLocalTime(next.scheduledAt)}`;
+    studentWaitingMeta.textContent = `Interviewer: ${next.interviewerEmail} · Code: ${next.roomCode}`;
+  } else {
+    studentWaitingBody.textContent = "Waiting for interviewer…";
+    studentWaitingMeta.textContent = "No scheduled slot found for your email.";
+  }
+
+  const code = normalizeCode(admittedRooms[0]);
+  if (code && !autoJoinAttempted.has(code) && !meetingEl.classList.contains("hidden")) return;
+  if (code && !autoJoinAttempted.has(code) && !lobbyEl.classList.contains("hidden")) {
+    autoJoinAttempted.add(code);
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = `Interviewer already admitted you. Joining ${code}…`;
+    join(code).catch(() => {});
+  }
 }
 
 function createRemoteCard(peerId) {
@@ -596,6 +825,7 @@ async function join(code) {
   roomCodeLabel.textContent = roomCode;
   mountMeetingUI();
   clearPresenter();
+  if (currentUser?.role === "student") await proctor.start();
   const url = new URL(window.location.href);
   url.searchParams.set("code", roomCode);
   window.history.replaceState({}, "", url.toString());
@@ -750,13 +980,7 @@ logoutBtn.addEventListener("click", () => {
   currentUser = null;
   proctor.stop();
 
-  if (socket) {
-    try {
-      socket.disconnect();
-    } catch {
-    }
-    socket = undefined;
-  }
+  resetSocket();
 
   setAuthed(false);
   setStatus("Not connected");
@@ -776,11 +1000,16 @@ async function initAuth() {
   localStorage.removeItem("authToken");
   currentUser = null;
   proctor.stop();
+  resetSocket();
 
   setAuthed(false);
   authBtn.textContent = "Check account";
   setStatus("Not connected");
+  applyRoleUI();
   applyStudentJoinPolicy();
+  studentWaitingBody.textContent = "Waiting for interviewer…";
+  studentWaitingMeta.textContent = "";
+  meetingInfo.classList.add("hidden");
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -806,19 +1035,48 @@ authForm.addEventListener("submit", async (e) => {
   currentUser = res.body.user;
   setAuthed(true);
   authBtn.textContent = "Check account";
-  if (currentUser?.role !== "interviewer") createBtn.classList.add("hidden");
-  else createBtn.classList.remove("hidden");
   setStatus(`Logged in as ${currentUser.role}`);
+  applyRoleUI();
   applyStudentJoinPolicy();
+  resetSocket();
+  ensureSocket();
+  if (currentUser?.role === "interviewer") {
+    ensureSocket().emit("dashboard-subscribe", {}, () => {});
+  }
+  renderStudentWaiting();
   const urlCode = new URL(window.location.href).searchParams.get("code");
   if (urlCode) {
     const normalized = normalizeCode(urlCode);
     if (normalized) {
       codeInput.value = normalized;
       meetingInfo.classList.remove("hidden");
-      meetingInfo.textContent = "Meeting code loaded from link. Click Join to enter the meeting.";
+      meetingInfo.textContent =
+        currentUser?.role === "interviewer"
+          ? "Meeting code loaded from link. Click Join to enter the meeting."
+          : "Meeting code loaded from link. Wait for the interviewer to admit you.";
     }
   }
 });
+
+if (scheduleForm) {
+  scheduleForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (currentUser?.role !== "interviewer") return;
+    const studentEmail = String(studentEmailInput.value || "").trim();
+    const scheduledAt = String(scheduleTimeInput.value || "").trim();
+    meetingInfo.classList.add("hidden");
+    const res = await new Promise((resolve) => {
+      ensureSocket().emit("schedule-add", { studentEmail, scheduledAt }, (ack) => resolve(ack || { ok: false }));
+    });
+    if (!res.ok) {
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = res.error || "Failed to add slot";
+      return;
+    }
+    studentEmailInput.value = "";
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = `Added slot for ${res.entry?.studentEmail || studentEmail}.`;
+  });
+}
 
 initAuth().catch(() => {});

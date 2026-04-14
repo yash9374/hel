@@ -42,6 +42,28 @@
           <button class="btn" type="submit">Join</button>
         </form>
 
+        <div id="studentWaiting" class="waitingCard hidden">
+          <div class="waitingTitle">Waiting room</div>
+          <div id="studentWaitingBody" class="waitingBody">Waiting for interviewer…</div>
+          <div id="studentWaitingMeta" class="waitingMeta"></div>
+        </div>
+
+        <div id="interviewerDashboard" class="dashboard hidden">
+          <div class="dashboardTitle">Interview Dashboard</div>
+
+          <form id="scheduleForm" class="row">
+            <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
+            <input id="scheduleTimeInput" class="input" type="datetime-local" />
+            <button class="btn primary" type="submit">Add slot</button>
+          </form>
+
+          <div class="divider">Scheduled interviews</div>
+          <div id="scheduleList" class="dashList"></div>
+
+          <div class="divider">Online (no slot)</div>
+          <div id="unassignedList" class="dashList"></div>
+        </div>
+
         <div id="meetingInfo" class="meetingInfo hidden"></div>
       </section>
 

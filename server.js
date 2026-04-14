@@ -35,6 +35,116 @@ const sebConfigKey = process.env.SEB_CONFIG_KEY;
 const hasSupabase = Boolean(supabaseUrl && supabaseServiceKey);
 const supabase = hasSupabase ? createClient(supabaseUrl, supabaseServiceKey) : null;
 const sebSessions = new Map();
+const dashboardRoomPrefix = "dashboard:";
+const scheduleByInterviewer = new Map();
+const studentSocketIdsByEmail = new Map();
+const studentActiveRoomByEmail = new Map();
+const admissionByKey = new Map();
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeIsoDateTime(value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function admissionKey(roomCode, studentEmail) {
+  return `${String(roomCode || "").trim().toUpperCase()}|${String(studentEmail || "").trim().toLowerCase()}`;
+}
+
+function isStudentAdmitted(roomCode, studentEmail) {
+  const key = admissionKey(roomCode, studentEmail);
+  const entry = admissionByKey.get(key);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) {
+    admissionByKey.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function upsertScheduleEntry(interviewerEmail, entry) {
+  const email = String(interviewerEmail || "").trim().toLowerCase();
+  if (!email) return null;
+  if (!scheduleByInterviewer.has(email)) scheduleByInterviewer.set(email, []);
+  const list = scheduleByInterviewer.get(email);
+  const idx = list.findIndex((e) => e.id === entry.id);
+  if (idx >= 0) list[idx] = entry;
+  else list.push(entry);
+  return entry;
+}
+
+function getInterviewerSchedule(interviewerEmail) {
+  const email = String(interviewerEmail || "").trim().toLowerCase();
+  const list = scheduleByInterviewer.get(email) || [];
+  return [...list].sort((a, b) => {
+    const at = new Date(a.scheduledAt).getTime();
+    const bt = new Date(b.scheduledAt).getTime();
+    if (!Number.isNaN(at) && !Number.isNaN(bt) && at !== bt) return at - bt;
+    return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+  });
+}
+
+function computeDashboard(interviewerEmail) {
+  const schedule = getInterviewerSchedule(interviewerEmail).map((entry) => {
+    const online = studentSocketIdsByEmail.get(entry.studentEmail)?.size ? true : false;
+    const activeRoom = studentActiveRoomByEmail.get(entry.studentEmail) || null;
+    const admitted = isStudentAdmitted(entry.roomCode, entry.studentEmail);
+    const status = entry.doneAt
+      ? "done"
+      : activeRoom === entry.roomCode
+        ? "in_room"
+        : admitted
+          ? "admitted"
+          : online
+            ? "waiting"
+            : "scheduled";
+    return { ...entry, online, admitted, activeRoom, status };
+  });
+
+  const byStudent = new Map(schedule.map((s) => [s.studentEmail, s]));
+  const unassigned = Array.from(studentSocketIdsByEmail.keys())
+    .filter((email) => !byStudent.has(email))
+    .map((email) => ({ email, online: true, activeRoom: studentActiveRoomByEmail.get(email) || null }))
+    .sort((a, b) => a.email.localeCompare(b.email));
+
+  return { schedule, unassigned };
+}
+
+function emitDashboard(interviewerEmail) {
+  const email = String(interviewerEmail || "").trim().toLowerCase();
+  if (!email) return;
+  io.to(`${dashboardRoomPrefix}${email}`).emit("dashboard-update", computeDashboard(email));
+}
+
+function emitDashboardsForAllInterviewers() {
+  for (const interviewerEmail of scheduleByInterviewer.keys()) emitDashboard(interviewerEmail);
+}
+
+function emitStudentStatus(studentEmail) {
+  const email = String(studentEmail || "").trim().toLowerCase();
+  if (!email) return;
+  const scheduleEntries = [];
+  for (const [interviewerEmail, list] of scheduleByInterviewer.entries()) {
+    for (const entry of list) {
+      if (entry.studentEmail === email) scheduleEntries.push({ interviewerEmail, ...entry });
+    }
+  }
+  const admittedRooms = [];
+  for (const entry of scheduleEntries) {
+    if (isStudentAdmitted(entry.roomCode, email)) admittedRooms.push(entry.roomCode);
+  }
+  const socketIds = studentSocketIdsByEmail.get(email);
+  if (!socketIds?.size) return;
+  for (const socketId of socketIds) {
+    io.to(socketId).emit("student-status", { schedule: scheduleEntries, admittedRooms });
+  }
+}
 
 function base64UrlEncode(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
@@ -219,29 +329,43 @@ function generateMeetingCode() {
   return out;
 }
 
+async function ensureMeetingExists({ code, createdBy }) {
+  if (!supabase) return { ok: true, code };
+  const normalized = String(code || "").trim().toUpperCase();
+  if (!normalized) return { ok: false, error: "Invalid code" };
+
+  const { data: existing, error: existsError } = await supabase
+    .from("meetings")
+    .select("code")
+    .eq("code", normalized)
+    .maybeSingle();
+  if (existsError) return { ok: false, error: "Database error" };
+  if (existing) return { ok: true, code: normalized };
+
+  const { error: insertError } = await supabase
+    .from("meetings")
+    .insert({ code: normalized, created_by: createdBy, created_at: nowIso() });
+  if (insertError) return { ok: false, error: "Database error" };
+  return { ok: true, code: normalized };
+}
+
+async function createMeetingCodeFor(createdBy) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const code = generateMeetingCode();
+    const ensured = await ensureMeetingExists({ code, createdBy });
+    if (ensured.ok) return { ok: true, code: ensured.code };
+    if (ensured.error !== "Database error") continue;
+    return ensured;
+  }
+  return { ok: false, error: "Failed to create meeting" };
+}
+
 app.post("/api/create-meeting", requireSupabase, requireAuth, async (req, res) => {
   if (req.user.role !== "interviewer") return res.status(403).json({ ok: false, error: "Forbidden" });
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const code = generateMeetingCode();
-
-    const { data: existing, error: existsError } = await supabase
-      .from("meetings")
-      .select("code")
-      .eq("code", code)
-      .maybeSingle();
-    if (existsError) return res.status(500).json({ ok: false, error: "Database error" });
-    if (existing) continue;
-
-    const { error: insertError } = await supabase
-      .from("meetings")
-      .insert({ code, created_by: req.user.email, created_at: new Date().toISOString() });
-    if (insertError) return res.status(500).json({ ok: false, error: "Database error" });
-
-    return res.status(200).json({ ok: true, code });
-  }
-
-  return res.status(500).json({ ok: false, error: "Failed to create meeting" });
+  const created = await createMeetingCodeFor(req.user.email);
+  if (!created.ok) return res.status(500).json({ ok: false, error: created.error || "Failed to create meeting" });
+  return res.status(200).json({ ok: true, code: created.code });
 });
 
 io.use((socket, next) => {
@@ -262,6 +386,16 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
+  const userEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+  const userRole = String(socket.data.user?.role || "").trim().toLowerCase();
+
+  if (userRole === "student" && userEmail) {
+    if (!studentSocketIdsByEmail.has(userEmail)) studentSocketIdsByEmail.set(userEmail, new Set());
+    studentSocketIdsByEmail.get(userEmail).add(socket.id);
+    emitStudentStatus(userEmail);
+    emitDashboardsForAllInterviewers();
+  }
+
   socket.on("join-room", async ({ roomCode }, ack) => {
     if (typeof roomCode !== "string" || roomCode.trim().length === 0) {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid code" });
@@ -295,6 +429,20 @@ io.on("connection", (socket) => {
     const normalized = roomCode.trim().toUpperCase();
     const room = `room:${normalized}`;
 
+    if (socket.data.user?.role === "student") {
+      const email = String(socket.data.user?.email || "").trim().toLowerCase();
+      if (!email || !isStudentAdmitted(normalized, email)) {
+        if (typeof ack === "function") ack({ ok: false, error: "Waiting for interviewer approval" });
+        return;
+      }
+    }
+
+    const currentSize = io.sockets.adapter.rooms.get(room)?.size ?? 0;
+    if (currentSize >= 3) {
+      if (typeof ack === "function") ack({ ok: false, error: "Room is full (max 3 participants)" });
+      return;
+    }
+
     if (supabase) {
       const { data: meeting, error } = await supabase
         .from("meetings")
@@ -318,6 +466,14 @@ io.on("connection", (socket) => {
 
     socket.data.room = room;
     socket.data.roomCode = normalized;
+    if (socket.data.user?.role === "student") {
+      const email = String(socket.data.user?.email || "").trim().toLowerCase();
+      if (email) {
+        studentActiveRoomByEmail.set(email, normalized);
+        emitStudentStatus(email);
+        emitDashboardsForAllInterviewers();
+      }
+    }
 
     if (typeof ack === "function") ack({ ok: true, peerIds, roomCode: normalized });
   });
@@ -343,12 +499,122 @@ io.on("connection", (socket) => {
     if (!room) return;
     socket.to(room).emit("peer-left", { peerId: socket.id });
     socket.leave(room);
+    if (socket.data.user?.role === "student") {
+      const email = String(socket.data.user?.email || "").trim().toLowerCase();
+      if (email && studentActiveRoomByEmail.get(email) === socket.data.roomCode) {
+        studentActiveRoomByEmail.delete(email);
+        emitStudentStatus(email);
+        emitDashboardsForAllInterviewers();
+      }
+    }
     socket.data.room = undefined;
     socket.data.roomCode = undefined;
   };
 
   socket.on("leave-room", leave);
-  socket.on("disconnect", leave);
+
+  socket.on("dashboard-subscribe", (payload, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    socket.join(`${dashboardRoomPrefix}${interviewerEmail}`);
+    if (!scheduleByInterviewer.has(interviewerEmail)) scheduleByInterviewer.set(interviewerEmail, []);
+    const dash = computeDashboard(interviewerEmail);
+    socket.emit("dashboard-update", dash);
+    if (typeof ack === "function") ack({ ok: true, dashboard: dash });
+  });
+
+  socket.on("schedule-add", async ({ studentEmail, scheduledAt }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const sEmail = normalizeEmail(studentEmail);
+    if (!sEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid student email" });
+      return;
+    }
+    const iso = normalizeIsoDateTime(scheduledAt);
+    if (!iso) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid scheduled time" });
+      return;
+    }
+    const created = await createMeetingCodeFor(interviewerEmail);
+    if (!created.ok) {
+      if (typeof ack === "function") ack({ ok: false, error: created.error || "Failed to create meeting" });
+      return;
+    }
+    const entry = {
+      id: crypto.randomUUID(),
+      studentEmail: sEmail,
+      scheduledAt: iso,
+      roomCode: created.code,
+      createdAt: nowIso(),
+      doneAt: null
+    };
+    upsertScheduleEntry(interviewerEmail, entry);
+    emitDashboard(interviewerEmail);
+    emitStudentStatus(sEmail);
+    if (typeof ack === "function") ack({ ok: true, entry });
+  });
+
+  socket.on("schedule-admit", ({ scheduleId }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const list = scheduleByInterviewer.get(interviewerEmail) || [];
+    const entry = list.find((e) => e.id === scheduleId);
+    if (!entry) {
+      if (typeof ack === "function") ack({ ok: false, error: "Schedule not found" });
+      return;
+    }
+    const key = admissionKey(entry.roomCode, entry.studentEmail);
+    admissionByKey.set(key, { admittedBy: interviewerEmail, admittedAt: Date.now(), expiresAt: Date.now() + 45 * 60 * 1000 });
+    const socketIds = studentSocketIdsByEmail.get(entry.studentEmail);
+    if (socketIds?.size) {
+      for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode: entry.roomCode, scheduleId: entry.id });
+    }
+    emitDashboard(interviewerEmail);
+    emitStudentStatus(entry.studentEmail);
+    if (typeof ack === "function") ack({ ok: true, roomCode: entry.roomCode });
+  });
+
+  socket.on("schedule-done", ({ scheduleId }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const list = scheduleByInterviewer.get(interviewerEmail) || [];
+    const idx = list.findIndex((e) => e.id === scheduleId);
+    if (idx < 0) {
+      if (typeof ack === "function") ack({ ok: false, error: "Schedule not found" });
+      return;
+    }
+    const updated = { ...list[idx], doneAt: nowIso() };
+    list[idx] = updated;
+    emitDashboard(interviewerEmail);
+    emitStudentStatus(updated.studentEmail);
+    if (typeof ack === "function") ack({ ok: true });
+  });
+
+  socket.on("disconnect", () => {
+    leave();
+    if (userRole === "student" && userEmail) {
+      const set = studentSocketIdsByEmail.get(userEmail);
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) studentSocketIdsByEmail.delete(userEmail);
+      }
+      emitStudentStatus(userEmail);
+      emitDashboardsForAllInterviewers();
+    }
+  });
 });
 
 const port = Number(process.env.PORT) || 3000;

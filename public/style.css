@@ -214,6 +214,113 @@ body {
   background: rgba(248, 250, 252, 0.85);
 }
 
+.waitingCard {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(248, 250, 252, 0.92);
+  display: grid;
+  gap: 6px;
+}
+
+.waitingTitle {
+  font-weight: 800;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.waitingBody {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.waitingMeta {
+  font-size: 13px;
+  color: #475569;
+}
+
+.dashboard {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.dashboardTitle {
+  font-weight: 900;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.dashList {
+  display: grid;
+  gap: 10px;
+}
+
+.dashItem {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(248, 250, 252, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dashLeft {
+  display: grid;
+  gap: 2px;
+}
+
+.dashPrimary {
+  font-weight: 750;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.dashSecondary {
+  font-size: 13px;
+  color: #475569;
+}
+
+.dashActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  font-weight: 750;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+.pill.good {
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #14532d;
+  background: rgba(220, 252, 231, 0.85);
+}
+
+.pill.warn {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #78350f;
+  background: rgba(254, 243, 199, 0.85);
+}
+
+.pill.bad {
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #7f1d1d;
+  background: rgba(254, 226, 226, 0.85);
+}
+
 .hidden {
   display: none;
 }
@@ -373,7 +480,6 @@ body.inMeeting #meeting.panel {
 #meeting.presenting #remoteVideos .videoCard {
   min-height: 110px;
   aspect-ratio: 16 / 9;
-}
 }
 
 .meetingBarRight {
