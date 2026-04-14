@@ -285,8 +285,6 @@ app.post("/api/login", requireSupabase, async (req, res) => {
   if (!email) return res.status(400).json({ ok: false, error: "Invalid email" });
   if (!sessionSecret) return res.status(500).json({ ok: false, error: "Server not configured" });
 
-  const now = new Date().toISOString();
-
   const { data: existing, error: existingError } = await supabase
     .from("users")
     .select("email, role")
@@ -299,6 +297,14 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   const role = normalizeRole(existing.role);
   if (!role) return res.status(500).json({ ok: false, error: "Role missing in database" });
+
+  if (role === "student" && shouldRequireSebKeyCheck()) {
+    const requestUrl = getFullRequestUrl(req);
+    const ok = verifySebHeaders({ headers: req.headers, requestUrl });
+    if (!ok) return res.status(403).json({ ok: false, error: "Open in the specified app to continue." });
+  }
+
+  const now = new Date().toISOString();
 
   const { error: updateError } = await supabase
     .from("users")
