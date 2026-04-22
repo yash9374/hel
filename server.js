@@ -629,6 +629,31 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack({ ok: true });
   });
 
+  socket.on("proctor-event", (payload, ack) => {
+    if (socket.data.user?.role !== "student") {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const room = socket.data.room;
+    if (!room) {
+      if (typeof ack === "function") ack({ ok: false });
+      return;
+    }
+    const type = typeof payload?.type === "string" ? payload.type : null;
+    const reason = typeof payload?.reason === "string" ? payload.reason : "";
+    const at =
+      typeof payload?.at === "string" && payload.at
+        ? payload.at
+        : new Date().toISOString();
+    socket.to(room).emit("proctor-event", {
+      peerId: socket.id,
+      type,
+      reason,
+      at
+    });
+    if (typeof ack === "function") ack({ ok: true });
+  });
+
   socket.on("signal", ({ to, payload }) => {
     if (typeof to !== "string") return;
     io.to(to).emit("signal", { from: socket.id, payload });

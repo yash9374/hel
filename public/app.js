@@ -57,6 +57,7 @@ const remoteMedia = new Map();
 const remoteCards = new Map();
 const proctor = createProctor();
 const localCardHome = { parent: localCard.parentElement, nextSibling: localCard.nextSibling };
+const proctorFlags = new Map();
 let presenterPeerId = null;
 let presenterStageEl = null;
 
@@ -247,6 +248,15 @@ function createProctor() {
     const message = `${reason} Return to the interview window.`;
     showOverlay(message);
     throttledAlert(message);
+    try {
+      const payload = {
+        type: "violation",
+        reason,
+        at: new Date().toISOString()
+      };
+      ensureSocket().emit("proctor-event", payload);
+    } catch {
+    }
 
     if (state.maxWarnings && state.warnings >= state.maxWarnings) {
       leave().catch(() => {});
@@ -506,6 +516,32 @@ function ensureSocket() {
     if (presenterPeerId === peerId) clearPresenter();
   });
 
+  socket.on("proctor-event", ({ peerId, reason }) => {
+    if (!peerId) return;
+    const entry = remoteCards.get(peerId);
+    if (!entry || !entry.card) return;
+    const card = entry.card;
+    let flag = entry.flag;
+    if (!flag) {
+      flag = document.createElement("div");
+      flag.className = "proctorFlag";
+      card.appendChild(flag);
+      entry.flag = flag;
+    }
+    const text = reason || "Student left the interview window.";
+    flag.textContent = text;
+    flag.classList.remove("hidden");
+    card.classList.add("proctorFlagged");
+    const existingTimeout = proctorFlags.get(peerId);
+    if (existingTimeout) clearTimeout(existingTimeout);
+    const timeoutId = setTimeout(() => {
+      flag.classList.add("hidden");
+      card.classList.remove("proctorFlagged");
+      proctorFlags.delete(peerId);
+    }, 5000);
+    proctorFlags.set(peerId, timeoutId);
+  });
+
   socket.on("signal", async ({ from, payload }) => {
     const pc = createPeerConnection(from, false);
     if (!payload || typeof payload !== "object") return;
@@ -722,7 +758,7 @@ function createRemoteCard(peerId) {
   card.appendChild(video);
   remoteVideos.appendChild(card);
 
-  remoteCards.set(peerId, { card, video });
+  remoteCards.set(peerId, { card, video, flag: null });
   return { card, video };
 }
 
