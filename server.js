@@ -338,6 +338,51 @@ async function notifyJoinRequest({ roomCode, studentEmail }) {
   }
 }
 
+async function isRoomExpired(roomCode) {
+  const code = String(roomCode || "").trim().toUpperCase();
+  if (!code) return false;
+  const now = Date.now();
+  const maxDurationMs = 60 * 60 * 1000;
+
+  let startAt = null;
+  let doneAt = null;
+
+  const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+  if (useDb) {
+    const { data, error } = await supabase
+      .from(scheduleTable)
+      .select("scheduled_at, admitted_at, done_at")
+      .eq("room_code", code)
+      .order("scheduled_at", { ascending: true })
+      .limit(1);
+    if (!error && data && data.length) {
+      const row = data[0];
+      doneAt = row.done_at ? new Date(row.done_at).getTime() : null;
+      const admittedTs = row.admitted_at ? new Date(row.admitted_at).getTime() : null;
+      const scheduledTs = row.scheduled_at ? new Date(row.scheduled_at).getTime() : null;
+      startAt = admittedTs ?? scheduledTs ?? null;
+    }
+  }
+
+  if (!useDb || (!startAt && !doneAt)) {
+    for (const list of scheduleByInterviewer.values()) {
+      for (const entry of list) {
+        if (!entry.roomCode || String(entry.roomCode || "").toUpperCase() !== code) continue;
+        const entryDone = entry.doneAt ? new Date(entry.doneAt).getTime() : null;
+        const entryAdmitted = entry.admittedAt ? new Date(entry.admittedAt).getTime() : null;
+        const entryScheduled = entry.scheduledAt ? new Date(entry.scheduledAt).getTime() : null;
+        if (entryDone && (!doneAt || entryDone < doneAt)) doneAt = entryDone;
+        const candidateStart = entryAdmitted ?? entryScheduled ?? null;
+        if (candidateStart && (!startAt || candidateStart < startAt)) startAt = candidateStart;
+      }
+    }
+  }
+
+  if (doneAt) return true;
+  if (!startAt) return false;
+  return now - startAt > maxDurationMs;
+}
+
 function base64UrlEncode(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
   return buf
@@ -625,6 +670,10 @@ io.on("connection", (socket) => {
     }
 
     const normalized = roomCode.trim().toUpperCase();
+    if (await isRoomExpired(normalized)) {
+      if (typeof ack === "function") ack({ ok: false, error: "Meeting has ended" });
+      return;
+    }
     const room = `room:${normalized}`;
 
     if (socket.data.user?.role === "student") {

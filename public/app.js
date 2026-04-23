@@ -617,7 +617,9 @@ function renderDashboard() {
   clearChildren(scheduleList);
   if (!dash) return;
 
-  const items = Array.isArray(dash.schedule) ? dash.schedule : [];
+  const items = (Array.isArray(dash.schedule) ? dash.schedule : []).filter(
+    (entry) => String(entry.status || "").toLowerCase() !== "done"
+  );
   if (items.length === 0) {
     const empty = document.createElement("div");
     empty.className = "dashItem";
