@@ -13,6 +13,8 @@ const meetingInfo = document.getElementById("meetingInfo");
 const studentWaitingCard = document.getElementById("studentWaiting");
 const studentWaitingBody = document.getElementById("studentWaitingBody");
 const studentWaitingMeta = document.getElementById("studentWaitingMeta");
+const studentJoinForm = document.getElementById("studentJoinForm");
+const studentCodeInput = document.getElementById("studentCodeInput");
 const interviewerDashboardEl = document.getElementById("interviewerDashboard");
 const scheduleForm = document.getElementById("scheduleForm");
 const studentEmailInput = document.getElementById("studentEmailInput");
@@ -92,7 +94,7 @@ function applyRoleUI() {
   const isStudent = role === "student";
   const isInterviewer = role === "interviewer";
 
-  joinForm.classList.toggle("hidden", isStudent || interviewerTab !== "join");
+  joinForm.classList.toggle("hidden", !isInterviewer || interviewerTab !== "join");
   studentWaitingCard.classList.toggle("hidden", !isStudent);
   interviewerDashboardEl.classList.toggle("hidden", !isInterviewer);
 
@@ -486,12 +488,15 @@ function ensureSocket() {
     renderStudentWaiting();
   });
 
-  socket.on("admitted", async ({ roomCode: admittedCode }) => {
+  socket.on("admitted", ({ roomCode: admittedCode }) => {
     const code = normalizeCode(admittedCode);
     if (!code) return;
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = `Interviewer allowed you to join. Joining ${code}…`;
-    await join(code);
+    meetingInfo.textContent = `Interviewer allowed you to join. Enter the code below and click Join to start the interview.`;
+    if (currentUser?.role === "student" && studentJoinForm && studentCodeInput) {
+      studentCodeInput.value = code;
+      studentJoinForm.classList.remove("hidden");
+    }
   });
 
   socket.on("existing-peers", async ({ peerIds, roomCode: rc }) => {
@@ -710,6 +715,7 @@ function renderStudentWaiting() {
   if (!status) {
     studentWaitingBody.textContent = "Waiting for interviewer…";
     studentWaitingMeta.textContent = "";
+    if (studentJoinForm) studentJoinForm.classList.add("hidden");
     return;
   }
 
@@ -732,12 +738,13 @@ function renderStudentWaiting() {
   }
 
   const code = normalizeCode(admittedRooms[0]);
-  if (code && !autoJoinAttempted.has(code) && !meetingEl.classList.contains("hidden")) return;
-  if (code && !autoJoinAttempted.has(code) && !lobbyEl.classList.contains("hidden")) {
-    autoJoinAttempted.add(code);
+  if (code && studentJoinForm && studentCodeInput) {
+    studentCodeInput.value = code;
+    studentJoinForm.classList.remove("hidden");
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = `Interviewer already admitted you. Joining ${code}…`;
-    join(code).catch(() => {});
+    meetingInfo.textContent = "Interviewer admitted you. Check the code below and click Join to enter the interview.";
+  } else if (studentJoinForm) {
+    studentJoinForm.classList.add("hidden");
   }
 }
 
@@ -973,6 +980,13 @@ joinForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   await join(codeInput.value);
 });
+
+if (studentJoinForm) {
+  studentJoinForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await join(studentCodeInput.value);
+  });
+}
 
 screenShareBtn.addEventListener("click", async () => {
   if (isScreenSharing) await stopScreenShare();

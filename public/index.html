@@ -32,6 +32,16 @@
           <div class="waitingTitle">Waiting room</div>
           <div id="studentWaitingBody" class="waitingBody">Waiting for interviewer…</div>
           <div id="studentWaitingMeta" class="waitingMeta"></div>
+          <form id="studentJoinForm" class="row hidden">
+            <input
+              id="studentCodeInput"
+              class="input"
+              autocomplete="off"
+              placeholder="Enter meeting code"
+              maxlength="10"
+            />
+            <button class="btn primary" type="submit">Join</button>
+          </form>
         </div>
 
         <div id="interviewerDashboard" class="dashboard hidden">
