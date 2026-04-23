@@ -1049,23 +1049,66 @@ setLobbyVisible(true);
 setStatus("Not connected");
 syncControlUI();
 
-async function initAuth() {
-  authToken = "";
-  localStorage.removeItem("authToken");
+async function bootstrapAuth() {
+  authError.classList.add("hidden");
+  authError.textContent = "";
+
+  authToken = localStorage.getItem("authToken") || "";
   currentUser = null;
   proctor.stop();
   resetSocket();
 
-  setAuthed(false);
-  authBtn.textContent = "Check account";
-  setStatus("Not connected");
-  interviewerTab = "schedule";
+  const resetToLoggedOut = () => {
+    setAuthed(false);
+    authBtn.textContent = "Log in";
+    setStatus("Not connected");
+    interviewerTab = "schedule";
+    applyRoleUI();
+    applyStudentJoinPolicy();
+    studentWaitingBody.textContent = "Waiting for interviewer…";
+    studentWaitingMeta.textContent = "";
+    meetingInfo.classList.add("hidden");
+    if (passwordInput) passwordInput.value = "";
+  };
+
+  if (!authToken) {
+    localStorage.removeItem("authToken");
+    resetToLoggedOut();
+    return;
+  }
+
+  const res = await api("/api/me");
+  if (!res.ok || !res.body?.user) {
+    authToken = "";
+    localStorage.removeItem("authToken");
+    resetToLoggedOut();
+    return;
+  }
+
+  currentUser = res.body.user;
+  setAuthed(true);
+  authBtn.textContent = "Log in";
+  setStatus(`Logged in as ${currentUser.role}`);
   applyRoleUI();
   applyStudentJoinPolicy();
-  studentWaitingBody.textContent = "Waiting for interviewer…";
-  studentWaitingMeta.textContent = "";
-  meetingInfo.classList.add("hidden");
-  if (passwordInput) passwordInput.value = "";
+  resetSocket();
+  ensureSocket();
+  if (currentUser?.role === "interviewer") {
+    ensureSocket().emit("dashboard-subscribe", {}, () => {});
+  }
+  renderStudentWaiting();
+  const urlCode = new URL(window.location.href).searchParams.get("code");
+  if (urlCode) {
+    const normalized = normalizeCode(urlCode);
+    if (normalized) {
+      codeInput.value = normalized;
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent =
+        currentUser?.role === "interviewer"
+          ? "Meeting code loaded from link. Click Join to enter the meeting."
+          : "Meeting code loaded from link. Wait for the interviewer to admit you.";
+    }
+  }
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -1097,7 +1140,7 @@ authForm.addEventListener("submit", async (e) => {
   localStorage.setItem("authToken", authToken);
   currentUser = res.body.user;
   setAuthed(true);
-  authBtn.textContent = "Check account";
+  authBtn.textContent = "Log in";
   setStatus(`Logged in as ${currentUser.role}`);
   applyRoleUI();
   applyStudentJoinPolicy();
@@ -1162,4 +1205,4 @@ if (scheduleForm) {
   });
 }
 
-initAuth().catch(() => {});
+bootstrapAuth().catch(() => {});
