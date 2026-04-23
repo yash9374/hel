@@ -1093,7 +1093,17 @@ if (scheduleForm) {
     e.preventDefault();
     if (currentUser?.role !== "interviewer") return;
     const studentEmail = String(studentEmailInput.value || "").trim();
-    const scheduledAt = String(scheduleTimeInput.value || "").trim();
+    const rawTime = String(scheduleTimeInput.value || "").trim();
+    let scheduledAt = null;
+    if (rawTime) {
+      const d = new Date(rawTime);
+      if (!Number.isNaN(d.getTime())) scheduledAt = d.toISOString();
+    }
+    if (!scheduledAt) {
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = "Invalid scheduled time";
+      return;
+    }
     meetingInfo.classList.add("hidden");
     const res = await new Promise((resolve) => {
       ensureSocket().emit("schedule-add", { studentEmail, scheduledAt }, (ack) => resolve(ack || { ok: false }));
