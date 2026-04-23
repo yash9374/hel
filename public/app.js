@@ -477,7 +477,10 @@ function ensureSocket() {
     auth: { token: authToken }
   });
 
-  socket.on("connect", () => setStatus(`Connected (${socket.id})`));
+  socket.on("connect", () => {
+    if (currentUser?.email) setStatus(`Connected as ${currentUser.email}`);
+    else setStatus("Connected");
+  });
   socket.on("disconnect", () => setStatus("Disconnected"));
   socket.on("connect_error", () => setStatus("Connection error"));
 
