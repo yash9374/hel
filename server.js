@@ -69,14 +69,14 @@ async function getUserByEmail(email) {
 
   const primary = await supabase
     .from("users")
-    .select("email, role, name")
+    .select("email, role, name, password_hash")
     .eq("email", normalized)
     .maybeSingle();
 
   if (!primary.error) return { ok: true, user: primary.data };
 
-  const msg = String(primary.error?.message || "");
-  if (!msg.toLowerCase().includes("column") || !msg.toLowerCase().includes("name")) {
+  const msg = String(primary.error?.message || "").toLowerCase();
+  if (!msg.includes("column") || (!msg.includes("name") && !msg.includes("password_hash"))) {
     return { ok: false, error: "Database error" };
   }
 
@@ -296,6 +296,48 @@ async function emitStudentStatus(studentEmail) {
   }
 }
 
+async function notifyJoinRequest({ roomCode, studentEmail }) {
+  const code = String(roomCode || "").trim().toUpperCase();
+  const email = String(studentEmail || "").trim().toLowerCase();
+  if (!code || !email) return;
+  const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+  let interviewerEmail = null;
+  let scheduleId = null;
+  if (useDb) {
+    const { data, error } = await supabase
+      .from(scheduleTable)
+      .select("id, interviewer_email")
+      .eq("student_email", email)
+      .eq("room_code", code)
+      .order("scheduled_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (!error && data) {
+      interviewerEmail = String(data.interviewer_email || "").toLowerCase();
+      scheduleId = data.id;
+    }
+  }
+  if (!interviewerEmail) {
+    for (const [iEmail, list] of scheduleByInterviewer.entries()) {
+      for (const entry of list) {
+        if (entry.studentEmail === email && String(entry.roomCode || "").toUpperCase() === code) {
+          interviewerEmail = iEmail;
+          scheduleId = entry.id;
+          break;
+        }
+      }
+      if (interviewerEmail) break;
+    }
+  }
+  if (!interviewerEmail) return;
+  const socketIds = interviewerSocketIdsByEmail.get(interviewerEmail);
+  if (!socketIds?.size) return;
+  const payload = { studentEmail: email, roomCode: code, scheduleId };
+  for (const sid of socketIds) {
+    io.to(sid).emit("join-request", payload);
+  }
+}
+
 function base64UrlEncode(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
   return buf
@@ -382,6 +424,18 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function verifyPasswordHash(password, hash) {
+  const stored = String(hash || "");
+  if (!stored) return false;
+  const computed = sha256Hex(password);
+  if (computed.length !== stored.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(stored));
+  } catch {
+    return false;
+  }
+}
+
 function verifySebHeaders({ headers, requestUrl }) {
   if (!shouldRequireSebKeyCheck()) return true;
   if (!requestUrl) return false;
@@ -433,6 +487,8 @@ function normalizeIp(ip) {
 app.post("/api/login", requireSupabase, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
   if (!email) return res.status(400).json({ ok: false, error: "Invalid email" });
+  const password = String(req.body?.password || "");
+  if (!password) return res.status(400).json({ ok: false, error: "Password required" });
   if (!sessionSecret) return res.status(500).json({ ok: false, error: "Server not configured" });
 
   const existingResult = await getUserByEmail(email);
@@ -446,6 +502,11 @@ app.post("/api/login", requireSupabase, async (req, res) => {
 
   const role = normalizeRole(existing.role);
   if (!role) return res.status(500).json({ ok: false, error: "Role missing in database" });
+
+  const storedHash = existing.password_hash ? String(existing.password_hash || "") : "";
+  if (!storedHash || !verifyPasswordHash(password, storedHash)) {
+    return res.status(401).json({ ok: false, error: "Invalid email or password" });
+  }
 
   if (role === "student" && shouldRequireSebKeyCheck()) {
     const requestUrl = getFullRequestUrl(req);
@@ -584,6 +645,9 @@ io.on("connection", (socket) => {
         if (!admitted) admitted = isStudentAdmitted(normalized, email);
       }
       if (!email || !admitted) {
+        if (email) {
+          notifyJoinRequest({ roomCode: normalized, studentEmail: email }).catch(() => {});
+        }
         if (typeof ack === "function") ack({ ok: false, error: "Waiting for interviewer approval" });
         return;
       }
@@ -758,6 +822,62 @@ io.on("connection", (socket) => {
     emitDashboard(interviewerEmail).catch(() => {});
     emitStudentStatus(sEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true, entry });
+  });
+
+  socket.on("join-request-decision", async ({ studentEmail, roomCode, accept }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const email = normalizeEmail(studentEmail);
+    const code = String(roomCode || "").trim().toUpperCase();
+    if (!email || !code) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid request" });
+      return;
+    }
+    if (!accept) {
+      if (typeof ack === "function") ack({ ok: true, accepted: false });
+      return;
+    }
+    const key = admissionKey(code, email);
+    if (!key) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid request" });
+      return;
+    }
+    const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+    let scheduleId = null;
+    if (useDb) {
+      const { data, error } = await supabase
+        .from(scheduleTable)
+        .select("id")
+        .eq("student_email", email)
+        .eq("interviewer_email", interviewerEmail)
+        .eq("room_code", code)
+        .order("scheduled_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (!error && data) {
+        scheduleId = data.id;
+        await supabase
+          .from(scheduleTable)
+          .update({ admitted_at: nowIso() })
+          .eq("id", scheduleId)
+          .eq("interviewer_email", interviewerEmail);
+      }
+    }
+    admissionByKey.set(key, {
+      admittedBy: interviewerEmail,
+      admittedAt: Date.now(),
+      expiresAt: Date.now() + 45 * 60 * 1000
+    });
+    const socketIds = studentSocketIdsByEmail.get(email);
+    if (socketIds?.size) {
+      for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode: code, scheduleId });
+    }
+    emitDashboard(interviewerEmail).catch(() => {});
+    emitStudentStatus(email).catch(() => {});
+    if (typeof ack === "function") ack({ ok: true, accepted: true, roomCode: code, scheduleId });
   });
 
   socket.on("schedule-join", async ({ scheduleId }, ack) => {

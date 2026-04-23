@@ -2,6 +2,7 @@ const statusEl = document.getElementById("status");
 const authEl = document.getElementById("auth");
 const authForm = document.getElementById("authForm");
 const emailInput = document.getElementById("emailInput");
+const passwordInput = document.getElementById("passwordInput");
 const authBtn = document.getElementById("authBtn");
 const authError = document.getElementById("authError");
 const lobbyEl = document.getElementById("lobby");
@@ -57,6 +58,7 @@ let interviewerTab = "schedule";
 const peers = new Map();
 const remoteMedia = new Map();
 const remoteCards = new Map();
+let proctorSuppressed = false;
 const proctor = createProctor();
 const localCardHome = { parent: localCard.parentElement, nextSibling: localCard.nextSibling };
 const proctorFlags = new Map();
@@ -149,6 +151,7 @@ function createProctor() {
     if (!state.enabled) return false;
     if (currentUser?.role !== "student") return false;
     if (meetingEl.classList.contains("hidden")) return false;
+    if (proctorSuppressed) return false;
     return true;
   }
 
@@ -486,6 +489,18 @@ function ensureSocket() {
   socket.on("student-status", (payload) => {
     lastStudentStatus = payload || null;
     renderStudentWaiting();
+  });
+
+  socket.on("join-request", ({ studentEmail, roomCode }) => {
+    if (currentUser?.role !== "interviewer") return;
+    const email = String(studentEmail || "");
+    const code = normalizeCode(roomCode);
+    const label = email || "student";
+    const message = code
+      ? `${label} wants to join meeting ${code}. Admit this student?`
+      : `${label} wants to join the meeting. Admit this student?`;
+    const accept = window.confirm(message);
+    ensureSocket().emit("join-request-decision", { studentEmail: email, roomCode: code, accept });
   });
 
   socket.on("admitted", ({ roomCode: admittedCode }) => {
@@ -872,7 +887,10 @@ async function join(code) {
   roomCodeLabel.textContent = roomCode;
   mountMeetingUI();
   clearPresenter();
-  if (currentUser?.role === "student") await proctor.start();
+  if (currentUser?.role === "student") {
+    proctorSuppressed = false;
+    await proctor.start();
+  }
   const url = new URL(window.location.href);
   url.searchParams.set("code", roomCode);
   window.history.replaceState({}, "", url.toString());
@@ -1002,10 +1020,12 @@ camBtn.addEventListener("click", () => {
 });
 
 leaveBtn.addEventListener("click", () => {
+  proctorSuppressed = true;
   leave().catch(() => {});
 });
 
 logoutBtn.addEventListener("click", () => {
+  proctorSuppressed = true;
   leave().catch(() => {});
 
   authToken = "";
@@ -1018,6 +1038,7 @@ logoutBtn.addEventListener("click", () => {
   setAuthed(false);
   setStatus("Not connected");
   emailInput.value = "";
+  if (passwordInput) passwordInput.value = "";
 });
 
 window.addEventListener("beforeunload", () => {
@@ -1044,6 +1065,7 @@ async function initAuth() {
   studentWaitingBody.textContent = "Waiting for interviewer…";
   studentWaitingMeta.textContent = "";
   meetingInfo.classList.add("hidden");
+  if (passwordInput) passwordInput.value = "";
 }
 
 authForm.addEventListener("submit", async (e) => {
@@ -1052,10 +1074,17 @@ authForm.addEventListener("submit", async (e) => {
   authError.textContent = "";
 
   const email = String(emailInput.value || "").trim();
+  const password = String(passwordInput?.value || "").trim();
+
+  if (!password) {
+    authError.classList.remove("hidden");
+    authError.textContent = "Password is required";
+    return;
+  }
 
   const res = await api("/api/login", {
     method: "POST",
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ email, password })
   });
 
   if (!res.ok) {

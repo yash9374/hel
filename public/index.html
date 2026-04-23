@@ -18,7 +18,14 @@
           <div class="authTitle">Continue with email</div>
           <div class="authSubtitle">Enter your email to continue to the lobby.</div>
           <input id="emailInput" class="input" autocomplete="email" placeholder="Email" />
-          <button id="authBtn" class="btn primary" type="submit">Check account</button>
+          <input
+            id="passwordInput"
+            class="input"
+            type="password"
+            autocomplete="current-password"
+            placeholder="Password"
+          />
+          <button id="authBtn" class="btn primary" type="submit">Log in</button>
           <div id="authError" class="errorText hidden"></div>
         </form>
       </section>
