@@ -159,18 +159,11 @@ function getInterviewerSchedule(interviewerEmail) {
   });
 }
 
-function computeScheduleEntryStatus({ entry, online, activeRoom, admitted, nowMs }) {
-  const doneTs = entry.doneAt ? new Date(entry.doneAt).getTime() : null;
-  if (doneTs) return "completed";
-
+function computeScheduleEntryStatus({ entry, online, activeRoom, admitted }) {
+  if (entry.doneAt) return "done";
   if (entry.roomCode && activeRoom && activeRoom === entry.roomCode) return "in_room";
   if (admitted) return "admitted";
   if (online) return "waiting";
-
-  const schedTs = entry.scheduledAt ? new Date(entry.scheduledAt).getTime() : NaN;
-  const inPast = !Number.isNaN(schedTs) && typeof nowMs === "number" && nowMs > schedTs;
-  if (inPast) return "missed";
-
   return "scheduled";
 }
 
@@ -206,12 +199,11 @@ async function computeDashboard(interviewerEmail) {
     ...scheduleEntries.map((e) => e.studentEmail)
   ]);
 
-  const nowMs = Date.now();
   const schedule = scheduleEntries.map((entry) => {
     const online = studentSocketIdsByEmail.get(entry.studentEmail)?.size ? true : false;
     const activeRoom = studentActiveRoomByEmail.get(entry.studentEmail) || null;
     const admitted = isStudentAdmitted(entry.roomCode, entry.studentEmail);
-    const status = computeScheduleEntryStatus({ entry, online, activeRoom, admitted, nowMs });
+    const status = computeScheduleEntryStatus({ entry, online, activeRoom, admitted });
     const studentProfile = usersMap.get(String(entry.studentEmail || "").toLowerCase());
     const interviewerProfile = usersMap.get(String(interviewerEmail || "").toLowerCase());
     return {

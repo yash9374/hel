@@ -605,10 +605,9 @@ function resetSocket() {
 
 function statusPillClass(status) {
   const s = String(status || "").toLowerCase();
-  if (s === "in_room" || s === "completed") return "good";
+  if (s === "in_room" || s === "done") return "good";
   if (s === "waiting" || s === "admitted") return "warn";
   if (s === "scheduled") return "";
-  if (s === "missed") return "bad";
   return "bad";
 }
 
@@ -618,31 +617,16 @@ function renderDashboard() {
   clearChildren(scheduleList);
   if (!dash) return;
 
-  const all = Array.isArray(dash.schedule) ? dash.schedule : [];
-  const upcoming = [];
-  const missed = [];
-  const completed = [];
-
-  for (const entry of all) {
-    const status = String(entry.status || "").toLowerCase();
-    if (status === "completed") completed.push(entry);
-    else if (status === "missed") missed.push(entry);
-    else upcoming.push(entry);
-  }
-
-  if (upcoming.length === 0 && missed.length === 0 && completed.length === 0) {
+  const items = (Array.isArray(dash.schedule) ? dash.schedule : []).filter(
+    (entry) => String(entry.status || "").toLowerCase() !== "done"
+  );
+  if (items.length === 0) {
     const empty = document.createElement("div");
     empty.className = "dashItem";
     empty.textContent = "No scheduled interviews yet.";
     scheduleList.appendChild(empty);
   } else {
-    const renderSection = (label, entries) => {
-      if (!entries.length) return;
-      const header = document.createElement("div");
-      header.className = "dashSectionHeader";
-      header.textContent = label;
-      scheduleList.appendChild(header);
-      for (const entry of entries) {
+    for (const entry of items) {
       const row = document.createElement("div");
       row.className = "dashItem";
 
@@ -668,19 +652,17 @@ function renderDashboard() {
       const actions = document.createElement("div");
       actions.className = "dashActions";
 
-        const statusPill = document.createElement("div");
-        statusPill.className = `pill ${statusPillClass(entry.status)}`;
-        statusPill.textContent = String(entry.status || "scheduled").replace(/_/g, " ");
-        actions.appendChild(statusPill);
+      const statusPill = document.createElement("div");
+      statusPill.className = `pill ${statusPillClass(entry.status)}`;
+      statusPill.textContent = String(entry.status || "scheduled").replace(/_/g, " ");
+      actions.appendChild(statusPill);
 
-        const admitBtn = document.createElement("button");
-        admitBtn.type = "button";
-        admitBtn.className = "btn";
-        admitBtn.textContent = "Admit";
-        const status = String(entry.status || "").toLowerCase();
-        admitBtn.disabled =
-          !entry.roomCode || !entry.online || status === "completed" || status === "in_room" || status === "missed";
-        admitBtn.addEventListener("click", async () => {
+      const admitBtn = document.createElement("button");
+      admitBtn.type = "button";
+      admitBtn.className = "btn";
+      admitBtn.textContent = "Admit";
+      admitBtn.disabled = !entry.roomCode || !entry.online || entry.status === "done" || entry.status === "in_room";
+      admitBtn.addEventListener("click", async () => {
         meetingInfo.classList.add("hidden");
         const res = await new Promise((resolve) => {
           ensureSocket().emit("schedule-admit", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
@@ -695,11 +677,11 @@ function renderDashboard() {
       });
       actions.appendChild(admitBtn);
 
-        const joinBtn = document.createElement("button");
-        joinBtn.type = "button";
-        joinBtn.className = "btn primary";
-        joinBtn.textContent = entry.roomCode ? "Join" : "Create & Join";
-        joinBtn.addEventListener("click", async () => {
+      const joinBtn = document.createElement("button");
+      joinBtn.type = "button";
+      joinBtn.className = "btn primary";
+      joinBtn.textContent = entry.roomCode ? "Join" : "Create & Join";
+      joinBtn.addEventListener("click", async () => {
         meetingInfo.classList.add("hidden");
         let ensuredCode = entry.roomCode || null;
         if (!ensuredCode) {
@@ -724,12 +706,12 @@ function renderDashboard() {
       });
       actions.appendChild(joinBtn);
 
-        const doneBtn = document.createElement("button");
-        doneBtn.type = "button";
-        doneBtn.className = "btn";
-        doneBtn.textContent = "Completed";
-        doneBtn.disabled = String(entry.status || "").toLowerCase() === "completed";
-        doneBtn.addEventListener("click", async () => {
+      const doneBtn = document.createElement("button");
+      doneBtn.type = "button";
+      doneBtn.className = "btn";
+      doneBtn.textContent = "Done";
+      doneBtn.disabled = entry.status === "done";
+      doneBtn.addEventListener("click", async () => {
         const res = await new Promise((resolve) => {
           ensureSocket().emit("schedule-done", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
         });
@@ -738,17 +720,11 @@ function renderDashboard() {
           meetingInfo.textContent = res.error || "Failed to mark done";
         }
       });
-        actions.appendChild(doneBtn);
+      actions.appendChild(doneBtn);
 
-        row.appendChild(left);
-        row.appendChild(actions);
-        scheduleList.appendChild(row);
-      }
-    };
-
-    renderSection("Upcoming interviews", upcoming);
-    renderSection("Missed interviews", missed);
-    renderSection("Completed interviews", completed);
+      row.appendChild(left);
+      row.appendChild(actions);
+      scheduleList.appendChild(row);
     }
   }
 }
