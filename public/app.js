@@ -605,9 +605,10 @@ function resetSocket() {
 
 function statusPillClass(status) {
   const s = String(status || "").toLowerCase();
-  if (s === "in_room" || s === "done") return "good";
+  if (s === "in_room" || s === "completed") return "good";
   if (s === "waiting" || s === "admitted") return "warn";
   if (s === "scheduled") return "";
+  if (s === "missed") return "bad";
   return "bad";
 }
 
@@ -617,16 +618,31 @@ function renderDashboard() {
   clearChildren(scheduleList);
   if (!dash) return;
 
-  const items = (Array.isArray(dash.schedule) ? dash.schedule : []).filter(
-    (entry) => String(entry.status || "").toLowerCase() !== "done"
-  );
-  if (items.length === 0) {
+  const items = Array.isArray(dash.schedule) ? dash.schedule : [];
+  const upcoming = items.filter((entry) => {
+    const s = String(entry.status || "").toLowerCase();
+    return s !== "completed" && s !== "missed";
+  });
+  const missed = items.filter((entry) => String(entry.status || "").toLowerCase() === "missed");
+  const completed = items.filter((entry) => String(entry.status || "").toLowerCase() === "completed");
+
+  if (upcoming.length === 0 && missed.length === 0 && completed.length === 0) {
     const empty = document.createElement("div");
     empty.className = "dashItem";
     empty.textContent = "No scheduled interviews yet.";
     scheduleList.appendChild(empty);
-  } else {
-    for (const entry of items) {
+    return;
+  }
+
+  const renderSection = (sectionItems, title) => {
+    if (!sectionItems.length) return;
+    if (title) {
+      const header = document.createElement("div");
+      header.className = "divider";
+      header.textContent = title;
+      scheduleList.appendChild(header);
+    }
+    for (const entry of sectionItems) {
       const row = document.createElement("div");
       row.className = "dashItem";
 
@@ -709,8 +725,8 @@ function renderDashboard() {
       const doneBtn = document.createElement("button");
       doneBtn.type = "button";
       doneBtn.className = "btn";
-      doneBtn.textContent = "Done";
-      doneBtn.disabled = entry.status === "done";
+      doneBtn.textContent = "Mark completed";
+      doneBtn.disabled = String(entry.status || "").toLowerCase() === "completed";
       doneBtn.addEventListener("click", async () => {
         const res = await new Promise((resolve) => {
           ensureSocket().emit("schedule-done", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
@@ -726,7 +742,11 @@ function renderDashboard() {
       row.appendChild(actions);
       scheduleList.appendChild(row);
     }
-  }
+  };
+
+  renderSection(upcoming, null);
+  renderSection(missed, "Missed meetings");
+  renderSection(completed, "Completed meetings");
 }
 
 function renderStudentWaiting() {

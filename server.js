@@ -160,8 +160,16 @@ function getInterviewerSchedule(interviewerEmail) {
 }
 
 function computeScheduleEntryStatus({ entry, online, activeRoom, admitted }) {
-  if (entry.doneAt) return "done";
+  if (entry.doneAt) return "completed";
   if (entry.roomCode && activeRoom && activeRoom === entry.roomCode) return "in_room";
+
+  const now = Date.now();
+  const scheduledTs = entry.scheduledAt ? new Date(entry.scheduledAt).getTime() : NaN;
+  const isScheduledValid = !Number.isNaN(scheduledTs);
+  const missedGraceMs = 10 * 60 * 1000;
+  const isPastWindow = isScheduledValid && now > scheduledTs + missedGraceMs;
+
+  if (!entry.doneAt && isPastWindow && !activeRoom && !admitted) return "missed";
   if (admitted) return "admitted";
   if (online) return "waiting";
   return "scheduled";
