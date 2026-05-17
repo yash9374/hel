@@ -3,40 +3,158 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Simple WebRTC Meeting</title>
+    <title>Helix Interview Rooms</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
+    <div class="siteBackdrop" aria-hidden="true">
+      <div class="siteGlow glowA"></div>
+      <div class="siteGlow glowB"></div>
+      <div class="siteGlow glowC"></div>
+      <div class="gridOverlay"></div>
+    </div>
+
     <div class="container">
       <header class="header">
-        <div class="title">Simple WebRTC Meeting</div>
-        <div id="status" class="status">Not connected</div>
+        <div class="brand">
+          <div class="brandMark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <rect x="4" y="4" width="40" height="40" rx="14" fill="url(#brandGradient)" />
+              <path d="M16 26.5L22 32L33 18" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+              <defs>
+                <linearGradient id="brandGradient" x1="6" y1="6" x2="42" y2="42" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#60A5FA" />
+                  <stop offset="1" stop-color="#2563EB" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="brandCopy">
+            <div class="eyebrow">Enterprise Interview Platform</div>
+            <div class="title">Helix Interview Rooms</div>
+          </div>
+        </div>
+
+        <div class="headerMeta">
+          <div class="headerBadge">Trusted For Software Hiring</div>
+          <div id="status" class="status neutral">Not connected</div>
+        </div>
       </header>
 
-      <section id="auth" class="panel">
-        <form id="authForm" class="authForm">
-          <div class="authTitle">Continue with email</div>
-          <div class="authSubtitle">Enter your email to continue to the lobby.</div>
-          <input id="emailInput" class="input" autocomplete="email" placeholder="Email" />
-          <input
-            id="passwordInput"
-            class="input"
-            type="password"
-            autocomplete="current-password"
-            placeholder="Password"
-          />
-          <button id="authBtn" class="btn primary" type="submit">Log in</button>
-          <div id="authError" class="errorText hidden"></div>
-        </form>
+      <section id="auth" class="panel authPanel">
+        <div class="authLayout">
+          <div class="heroPanel">
+            <div class="heroPill">Secure, premium, company-ready</div>
+            <h1 class="heroTitle">Build more trust into every technical interview.</h1>
+            <p class="heroText">
+              Give candidates, interviewers, and hiring teams a polished experience with structured access,
+              professional meeting rooms, and a UI that feels ready for serious software hiring.
+            </p>
+
+            <div class="featureGrid">
+              <div class="featureCard">
+                <div class="featureIcon featureBlue">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M12 3L19 6V11C19 15.4 16.2 19.3 12 21C7.8 19.3 5 15.4 5 11V6L12 3Z" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M9.5 11.8L11.2 13.5L14.8 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </div>
+                <div class="featureTitle">Trusted Access</div>
+                <div class="featureText">Professional sign-in and guided interview flows that feel secure and intentional.</div>
+              </div>
+
+              <div class="featureCard">
+                <div class="featureIcon featurePurple">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <rect x="4" y="5" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M9 19H15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                    <path d="M12 17V19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  </svg>
+                </div>
+                <div class="featureTitle">Focused Interviews</div>
+                <div class="featureText">A clean meeting surface designed for serious software discussions and live evaluation.</div>
+              </div>
+
+              <div class="featureCard">
+                <div class="featureIcon featureGreen">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M12 7V12L15.5 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.8" />
+                  </svg>
+                </div>
+                <div class="featureTitle">On-Time Coordination</div>
+                <div class="featureText">Stay aligned on schedules, admissions, and live interview handoffs without confusion.</div>
+              </div>
+            </div>
+
+            <div class="metricsRow">
+              <div class="metricCard">
+                <div class="metricValue">Fast</div>
+                <div class="metricLabel">Candidate entry flow</div>
+              </div>
+              <div class="metricCard">
+                <div class="metricValue">Clear</div>
+                <div class="metricLabel">Interviewer actions</div>
+              </div>
+              <div class="metricCard">
+                <div class="metricValue">Secure</div>
+                <div class="metricLabel">Meeting experience</div>
+              </div>
+            </div>
+          </div>
+
+          <form id="authForm" class="authForm">
+            <div class="formChip">Company Login</div>
+            <div class="authTitle">Access your interview workspace</div>
+            <div class="authSubtitle">Sign in with your work email to schedule, admit, and run engineering interviews.</div>
+            <input id="emailInput" class="input" autocomplete="email" placeholder="Work email" />
+            <input
+              id="passwordInput"
+              class="input"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Password"
+            />
+            <button id="authBtn" class="btn primary" type="submit">Log in securely</button>
+            <div class="trustNote">Protected session, structured workflow, and a polished experience for software hiring.</div>
+            <div id="authError" class="errorText hidden"></div>
+          </form>
+        </div>
       </section>
 
-      <section id="lobby" class="panel">
-        <div class="row">
+      <section id="lobby" class="panel workspacePanel">
+        <div class="workspaceHeader">
+          <div class="workspaceIntro">
+            <div class="sectionEyebrow">Interview Operations</div>
+            <div class="workspaceTitle">Manage every interview with clarity and control</div>
+            <div class="workspaceSubtitle">Schedule sessions, admit candidates, and join meetings from one clean, trustworthy workspace.</div>
+          </div>
           <button id="logoutBtn" class="btn danger" type="button">Logout</button>
         </div>
 
+        <div class="workspaceHighlights">
+          <div class="highlightCard">
+            <div class="highlightTitle">Professional Experience</div>
+            <div class="highlightText">A polished interface that feels ready for company-facing recruiting workflows.</div>
+          </div>
+          <div class="highlightCard">
+            <div class="highlightTitle">Interview Visibility</div>
+            <div class="highlightText">Quickly review schedules, status, and room access without extra handholding.</div>
+          </div>
+          <div class="highlightCard">
+            <div class="highlightTitle">Confident Control</div>
+            <div class="highlightText">Admit candidates when ready and keep the interviewer flow organized from start to finish.</div>
+          </div>
+        </div>
+
         <div id="studentWaiting" class="waitingCard hidden">
-          <div class="waitingTitle">Waiting room</div>
+          <div class="cardHeader">
+            <div class="cardTitleGroup">
+              <div class="sectionEyebrow">Candidate View</div>
+              <div class="waitingTitle">Waiting room</div>
+            </div>
+            <div class="miniBadge">Live status</div>
+          </div>
           <div id="studentWaitingBody" class="waitingBody">Waiting for interviewer…</div>
           <div id="studentWaitingMeta" class="waitingMeta"></div>
           <form id="studentJoinForm" class="row hidden">
@@ -47,12 +165,18 @@
               placeholder="Enter meeting code"
               maxlength="10"
             />
-            <button class="btn primary" type="submit">Join</button>
+            <button class="btn primary" type="submit">Join interview</button>
           </form>
         </div>
 
         <div id="interviewerDashboard" class="dashboard hidden">
-          <div class="dashboardTitle">Interviewer</div>
+          <div class="cardHeader">
+            <div class="cardTitleGroup">
+              <div class="sectionEyebrow">Interviewer Console</div>
+              <div class="dashboardTitle">Interview workspace</div>
+            </div>
+            <div class="miniBadge">Scheduling and live access</div>
+          </div>
 
           <div class="tabs">
             <button id="tabScheduleBtn" class="tabBtn active" type="button">Schedule meeting</button>
@@ -60,15 +184,15 @@
           </div>
 
           <div id="tabSchedule" class="tabPanel">
-            <form id="scheduleForm" class="row">
+            <form id="scheduleForm" class="row formRow">
               <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
               <input id="scheduleTimeInput" class="input" type="datetime-local" />
-              <button class="btn primary" type="submit">Add slot</button>
+              <button class="btn primary" type="submit">Add interview slot</button>
             </form>
           </div>
 
           <div id="tabJoin" class="tabPanel hidden">
-            <form id="joinForm" class="row">
+            <form id="joinForm" class="row formRow">
               <input
                 id="codeInput"
                 class="input"
@@ -76,7 +200,7 @@
                 placeholder="Enter meeting code"
                 maxlength="10"
               />
-              <button class="btn" type="submit">Join</button>
+              <button class="btn" type="submit">Join room</button>
             </form>
 
             <div class="divider">Scheduled interviews</div>

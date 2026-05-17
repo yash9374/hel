@@ -66,7 +66,13 @@ let presenterPeerId = null;
 let presenterStageEl = null;
 
 function setStatus(text) {
-  statusEl.textContent = text;
+  const value = String(text || "");
+  statusEl.textContent = value;
+  const isBad = /error|disconnected/i.test(value);
+  const isOk = !isBad && /connected|logged in|joining|requesting/i.test(value);
+  statusEl.classList.toggle("ok", isOk);
+  statusEl.classList.toggle("bad", isBad);
+  statusEl.classList.toggle("neutral", !isOk && !isBad);
 }
 
 function setLobbyVisible(visible) {
@@ -1113,7 +1119,7 @@ async function bootstrapAuth() {
 
   const resetToLoggedOut = () => {
     setAuthed(false);
-    authBtn.textContent = "Log in";
+    authBtn.textContent = "Log in securely";
     setStatus("Not connected");
     interviewerTab = "schedule";
     applyRoleUI();
@@ -1140,7 +1146,7 @@ async function bootstrapAuth() {
 
   currentUser = res.body.user;
   setAuthed(true);
-  authBtn.textContent = "Log in";
+  authBtn.textContent = "Log in securely";
   setStatus(`Logged in as ${currentUser.role}`);
   applyRoleUI();
   applyStudentJoinPolicy();
@@ -1178,12 +1184,17 @@ authForm.addEventListener("submit", async (e) => {
     return;
   }
 
+  authBtn.disabled = true;
+  authBtn.textContent = "Signing in...";
+
   const res = await api("/api/login", {
     method: "POST",
     body: JSON.stringify({ email, password })
   });
 
   if (!res.ok) {
+    authBtn.disabled = false;
+    authBtn.textContent = "Log in securely";
     authError.classList.remove("hidden");
     authError.textContent = res.body?.error || "Account check failed";
     return;
@@ -1193,7 +1204,8 @@ authForm.addEventListener("submit", async (e) => {
   localStorage.setItem("authToken", authToken);
   currentUser = res.body.user;
   setAuthed(true);
-  authBtn.textContent = "Log in";
+  authBtn.disabled = false;
+  authBtn.textContent = "Log in securely";
   setStatus(`Logged in as ${currentUser.role}`);
   applyRoleUI();
   applyStudentJoinPolicy();
