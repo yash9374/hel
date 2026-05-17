@@ -643,6 +643,10 @@ function renderDashboard() {
       scheduleList.appendChild(header);
     }
     for (const entry of sectionItems) {
+      const status = String(entry.status || "").toLowerCase();
+      const isCompleted = status === "completed";
+      const isInRoom = status === "in_room";
+      const isAdmitted = status === "admitted";
       const row = document.createElement("div");
       row.className = "dashItem";
 
@@ -677,7 +681,7 @@ function renderDashboard() {
       admitBtn.type = "button";
       admitBtn.className = "btn";
       admitBtn.textContent = "Admit";
-      admitBtn.disabled = !entry.roomCode || !entry.online || entry.status === "done" || entry.status === "in_room";
+      admitBtn.disabled = !entry.roomCode || !entry.online || isCompleted || isInRoom || isAdmitted;
       admitBtn.addEventListener("click", async () => {
         meetingInfo.classList.add("hidden");
         const res = await new Promise((resolve) => {
@@ -695,9 +699,11 @@ function renderDashboard() {
 
       const joinBtn = document.createElement("button");
       joinBtn.type = "button";
-      joinBtn.className = "btn primary";
-      joinBtn.textContent = entry.roomCode ? "Join" : "Create & Join";
+      joinBtn.className = isCompleted ? "btn" : "btn primary";
+      joinBtn.textContent = isCompleted ? "Completed" : entry.roomCode ? "Join" : "Create & Join";
+      joinBtn.disabled = isCompleted;
       joinBtn.addEventListener("click", async () => {
+        if (isCompleted) return;
         meetingInfo.classList.add("hidden");
         let ensuredCode = entry.roomCode || null;
         if (!ensuredCode) {

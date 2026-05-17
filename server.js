@@ -210,7 +210,7 @@ async function computeDashboard(interviewerEmail) {
   const schedule = scheduleEntries.map((entry) => {
     const online = studentSocketIdsByEmail.get(entry.studentEmail)?.size ? true : false;
     const activeRoom = studentActiveRoomByEmail.get(entry.studentEmail) || null;
-    const admitted = isStudentAdmitted(entry.roomCode, entry.studentEmail);
+    const admitted = Boolean(entry.admittedAt) || isStudentAdmitted(entry.roomCode, entry.studentEmail);
     const status = computeScheduleEntryStatus({ entry, online, activeRoom, admitted });
     const studentProfile = usersMap.get(String(entry.studentEmail || "").toLowerCase());
     const interviewerProfile = usersMap.get(String(interviewerEmail || "").toLowerCase());
@@ -944,21 +944,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const admit = async ({ roomCode, studentEmail }) => {
-      const key = admissionKey(roomCode, studentEmail);
-      if (key) {
-        admissionByKey.set(key, {
-          admittedBy: interviewerEmail,
-          admittedAt: Date.now(),
-          expiresAt: Date.now() + 45 * 60 * 1000
-        });
-      }
-      const socketIds = studentSocketIdsByEmail.get(studentEmail);
-      if (socketIds?.size) {
-        for (const sid of socketIds) io.to(sid).emit("admitted", { roomCode, scheduleId });
-      }
-    };
-
     const useDb = supabase ? await ensureScheduleDbAvailable() : false;
     if (useDb) {
       const { data, error } = await supabase
@@ -979,21 +964,11 @@ io.on("connection", (socket) => {
           roomCode = created.code;
           await supabase
             .from(scheduleTable)
-            .update({ room_code: roomCode, admitted_at: nowIso() })
-            .eq("id", scheduleId)
-            .eq("interviewer_email", interviewerEmail);
-        } else {
-          await supabase
-            .from(scheduleTable)
-            .update({ admitted_at: nowIso() })
+            .update({ room_code: roomCode })
             .eq("id", scheduleId)
             .eq("interviewer_email", interviewerEmail);
         }
-
-        const studentEmail = String(data.student_email || "").toLowerCase();
-        await admit({ roomCode, studentEmail });
         emitDashboard(interviewerEmail).catch(() => {});
-        emitStudentStatus(studentEmail).catch(() => {});
         if (typeof ack === "function") ack({ ok: true, roomCode });
         return;
       }
@@ -1015,13 +990,9 @@ io.on("connection", (socket) => {
         return;
       }
       code = created.code;
-      list[idx] = { ...current, roomCode: code, admittedAt: nowIso() };
-    } else {
-      list[idx] = { ...current, admittedAt: nowIso() };
+      list[idx] = { ...current, roomCode: code };
     }
-    await admit({ roomCode: code, studentEmail: current.studentEmail });
     emitDashboard(interviewerEmail).catch(() => {});
-    emitStudentStatus(current.studentEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true, roomCode: code });
   });
 
