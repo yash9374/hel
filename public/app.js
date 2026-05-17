@@ -612,19 +612,41 @@ function statusPillClass(status) {
   return "bad";
 }
 
+const alertedMeetings = new Set();
+
+function showAlertForUpcomingMeetings(upcomingMeetings) {
+  const now = Date.now();
+  const alertThresholdMs = 5 * 60 * 1000; // 5 minutes
+
+  for (const entry of upcomingMeetings) {
+    const scheduledTime = new Date(entry.scheduledAt).getTime();
+    if (scheduledTime - now <= alertThresholdMs && scheduledTime > now && !alertedMeetings.has(entry.id)) {
+      alert(`Upcoming interview with ${entry.studentName || entry.studentEmail} at ${formatLocalTime(entry.scheduledAt)}!`);
+      alertedMeetings.add(entry.id);
+    }
+  }
+}
+
 function renderDashboard() {
   if (currentUser?.role !== "interviewer") return;
   const dash = lastDashboard;
   clearChildren(scheduleList);
+  alertedMeetings.clear();
   if (!dash) return;
 
   const items = Array.isArray(dash.schedule) ? dash.schedule : [];
-  const upcoming = items.filter((entry) => {
-    const s = String(entry.status || "").toLowerCase();
-    return s !== "completed" && s !== "missed";
-  });
+  const upcoming = items
+    .filter((entry) => {
+      const s = String(entry.status || "").toLowerCase();
+      return s !== "completed" && s !== "missed";
+    })
+    .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+
+  showAlertForUpcomingMeetings(upcoming);
   const missed = items.filter((entry) => String(entry.status || "").toLowerCase() === "missed");
-  const completed = items.filter((entry) => String(entry.status || "").toLowerCase() === "completed");
+  const completed = items
+    .filter((entry) => String(entry.status || "").toLowerCase() === "completed")
+    .sort((a, b) => new Date(b.doneAt).getTime() - new Date(a.doneAt).getTime());
 
   if (upcoming.length === 0 && missed.length === 0 && completed.length === 0) {
     const empty = document.createElement("div");
