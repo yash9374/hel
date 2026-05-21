@@ -186,7 +186,16 @@
           <div id="tabSchedule" class="tabPanel">
             <form id="scheduleForm" class="row formRow">
               <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
-              <input id="scheduleTimeInput" class="input" type="datetime-local" />
+              <div class="fieldWithIcon">
+                <input id="scheduleTimeInput" class="input" type="datetime-local" />
+                <button id="scheduleTimeBtn" class="iconBtn" type="button" aria-label="Pick date and time">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <rect x="4" y="5" width="16" height="15" rx="3" stroke="currentColor" stroke-width="1.8" />
+                    <path stroke="currentColor" stroke-linecap="round" stroke-width="1.8" d="M8 3v4M16 3v4M4 10h16" />
+                    <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 13v3l2 1" />
+                  </svg>
+                </button>
+              </div>
               <button class="btn primary" type="submit">Add interview slot</button>
             </form>
           </div>

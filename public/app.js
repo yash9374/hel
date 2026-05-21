@@ -20,6 +20,7 @@ const interviewerDashboardEl = document.getElementById("interviewerDashboard");
 const scheduleForm = document.getElementById("scheduleForm");
 const studentEmailInput = document.getElementById("studentEmailInput");
 const scheduleTimeInput = document.getElementById("scheduleTimeInput");
+const scheduleTimeBtn = document.getElementById("scheduleTimeBtn");
 const scheduleList = document.getElementById("scheduleList");
 const tabScheduleBtn = document.getElementById("tabScheduleBtn");
 const tabJoinBtn = document.getElementById("tabJoinBtn");
@@ -1267,6 +1268,23 @@ if (scheduleForm) {
     studentEmailInput.value = "";
     meetingInfo.classList.remove("hidden");
     meetingInfo.textContent = `Added slot for ${res.entry?.studentEmail || studentEmail}.`;
+  });
+}
+
+if (scheduleTimeBtn && scheduleTimeInput) {
+  scheduleTimeBtn.addEventListener("click", () => {
+    try {
+      if (typeof scheduleTimeInput.showPicker === "function") {
+        scheduleTimeInput.showPicker();
+        return;
+      }
+    } catch {
+    }
+    scheduleTimeInput.focus();
+    try {
+      scheduleTimeInput.click();
+    } catch {
+    }
   });
 }
 
