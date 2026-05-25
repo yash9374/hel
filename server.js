@@ -46,6 +46,8 @@ const studentActiveRoomByEmail = new Map();
 const admissionByKey = new Map();
 const aiSessionsById = new Map();
 const aiReportsByScheduleId = new Map();
+const aiConfigByScheduleId = new Map();
+const aiGeneratedQuestionsByScheduleId = new Map();
 
 const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
 const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -53,6 +55,8 @@ const openaiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const deepgramModel = process.env.DEEPGRAM_MODEL || "nova-2";
 const deepgramLanguage = process.env.DEEPGRAM_LANGUAGE || "en";
 const deepgramMimeType = process.env.DEEPGRAM_MIME_TYPE || "audio/webm";
+const aiQuestionPreviewMs = Math.max(0, Number(process.env.AI_QUESTION_PREVIEW_MS) || 15_000);
+const aiMaxRecordingMs = Math.max(10_000, Number(process.env.AI_MAX_RECORDING_MS) || 120_000);
 
 const aiQuestionBank = [
   {
@@ -201,6 +205,79 @@ async function scoreWithOpenAI({ topic, prompt, keywords, answerText }) {
   const baseScore = clampScore(Math.round(Number(parsed?.baseScore ?? parsed?.score ?? 0)), 0, 20);
   const feedback = String(parsed?.feedback || "").trim() || "Answer recorded.";
   return { ok: true, baseScore, feedback };
+}
+
+function normalizeAiQuestionLines(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((q) => String(q || "").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+async function generateAiQuestionsFromDescription({ description, count = 5 }) {
+  if (!openaiApiKey) return { ok: false, questions: [] };
+  const text = String(description || "").trim();
+  if (!text) return { ok: true, questions: [] };
+  const n = clampScore(Math.round(Number(count) || 0), 1, 8);
+
+  const json = await fetchJsonWithTimeout(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: openaiModel,
+        temperature: 0.4,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Generate technical interview questions. Return strict JSON only. Questions must be specific, answerable in 2 minutes, and appropriate for screening."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              description: text,
+              count: n,
+              output_format: {
+                questions: [
+                  {
+                    topic: "string",
+                    prompt: "string"
+                  }
+                ]
+              }
+            })
+          }
+        ]
+      })
+    },
+    20_000
+  );
+
+  const raw = String(json?.choices?.[0]?.message?.content || "").trim();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
+  const questions = list
+    .map((q) => ({
+      id: `gen-${crypto.randomUUID()}`,
+      topic: String(q?.topic || "General"),
+      seconds: Math.round(aiMaxRecordingMs / 1000),
+      prompt: String(q?.prompt || "").trim(),
+      keywords: []
+    }))
+    .filter((q) => q.prompt);
+  return { ok: true, questions: questions.slice(0, n) };
 }
 
 function computeKeywordScore(text, keywords) {
@@ -1044,7 +1121,7 @@ io.on("connection", (socket) => {
       });
   });
 
-  socket.on("schedule-add", async ({ studentEmail, scheduledAt }, ack) => {
+  socket.on("schedule-add", async ({ studentEmail, scheduledAt, aiDescription, aiQuestions }, ack) => {
     const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
     if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
@@ -1060,6 +1137,9 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid scheduled time" });
       return;
     }
+
+    const description = typeof aiDescription === "string" ? aiDescription.trim() : "";
+    const customQuestions = normalizeAiQuestionLines(aiQuestions);
 
     if (supabase) {
       const studentResult = await getUserByEmail(sEmail);
@@ -1101,6 +1181,17 @@ io.on("connection", (socket) => {
       if (error) upsertScheduleEntry(interviewerEmail, entry);
     } else {
       upsertScheduleEntry(interviewerEmail, entry);
+    }
+
+    const scheduleId = entry?.id != null ? String(entry.id) : null;
+    if (scheduleId && (description || customQuestions.length)) {
+      aiConfigByScheduleId.set(scheduleId, {
+        scheduleId,
+        interviewerEmail,
+        description: description || null,
+        customQuestions
+      });
+      aiGeneratedQuestionsByScheduleId.delete(scheduleId);
     }
 
     emitDashboard(interviewerEmail).catch(() => {});
@@ -1345,11 +1436,45 @@ io.on("connection", (socket) => {
     }
 
     const sessionId = crypto.randomUUID();
-    const questions = aiQuestionBank.map((q) => ({
+    const entryScheduleId = found.entry?.id != null ? String(found.entry.id) : null;
+    const cfg = entryScheduleId ? aiConfigByScheduleId.get(entryScheduleId) : null;
+    let sessionQuestions = null;
+
+    if (cfg?.customQuestions?.length) {
+      sessionQuestions = cfg.customQuestions.map((prompt, idx) => ({
+        id: `custom-${idx + 1}`,
+        topic: "Custom",
+        seconds: Math.round(aiMaxRecordingMs / 1000),
+        prompt: String(prompt || "").trim(),
+        keywords: []
+      }));
+    } else if (cfg?.description && entryScheduleId) {
+      const cached = aiGeneratedQuestionsByScheduleId.get(entryScheduleId);
+      if (Array.isArray(cached) && cached.length) {
+        sessionQuestions = cached;
+      } else {
+        try {
+          const gen = await generateAiQuestionsFromDescription({ description: cfg.description, count: 5 });
+          if (gen.ok && gen.questions?.length) {
+            aiGeneratedQuestionsByScheduleId.set(entryScheduleId, gen.questions);
+            sessionQuestions = gen.questions;
+          }
+        } catch {
+        }
+      }
+    }
+
+    if (!Array.isArray(sessionQuestions) || sessionQuestions.length === 0) {
+      sessionQuestions = aiQuestionBank.map((q) => ({ ...q }));
+    }
+
+    const clientQuestions = sessionQuestions.map((q) => ({
       id: q.id,
       topic: q.topic,
       seconds: q.seconds,
-      prompt: q.prompt
+      prompt: q.prompt,
+      previewMs: aiQuestionPreviewMs,
+      maxRecordingMs: aiMaxRecordingMs
     }));
     aiSessionsById.set(sessionId, {
       sessionId,
@@ -1357,11 +1482,11 @@ io.on("connection", (socket) => {
       studentEmail,
       interviewerEmail: found.entry.interviewerEmail,
       startedAt: Date.now(),
-      questions,
+      questions: sessionQuestions,
       answers: [],
       totals: null
     });
-    if (typeof ack === "function") ack({ ok: true, sessionId, questions });
+    if (typeof ack === "function") ack({ ok: true, sessionId, questions: clientQuestions });
   });
 
   socket.on("ai-answer", async ({ sessionId, questionId, text, audio, meta }, ack) => {
@@ -1382,7 +1507,10 @@ io.on("connection", (socket) => {
     }
 
     const qid = String(questionId || "");
-    const bank = aiQuestionBank.find((q) => q.id === qid) || null;
+    const fromSession = Array.isArray(session.questions)
+      ? session.questions.find((q) => String(q?.id || "") === qid)
+      : null;
+    const bank = fromSession || aiQuestionBank.find((q) => q.id === qid) || null;
     if (!bank) {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid question" });
       return;

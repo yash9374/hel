@@ -38,6 +38,8 @@ const scheduleForm = document.getElementById("scheduleForm");
 const studentEmailInput = document.getElementById("studentEmailInput");
 const scheduleTimeInput = document.getElementById("scheduleTimeInput");
 const scheduleTimeBtn = document.getElementById("scheduleTimeBtn");
+const aiDescriptionInput = document.getElementById("aiDescriptionInput");
+const aiQuestionsInput = document.getElementById("aiQuestionsInput");
 const scheduleList = document.getElementById("scheduleList");
 const tabScheduleBtn = document.getElementById("tabScheduleBtn");
 const tabJoinBtn = document.getElementById("tabJoinBtn");
@@ -83,11 +85,20 @@ let aiMediaRecorder = null;
 let aiRecordingStartAt = 0;
 let aiAudioChunks = [];
 let aiLatestAudioBuffer = null;
+let aiPreviewEndsAt = 0;
+let aiPreviewTimeoutId = null;
+let aiAutoStopTimeoutId = null;
+let aiCurrentMaxRecordingMs = 120000;
 let aiPoseIntervalId = null;
 let aiPoseStableTotal = 0;
 let aiPoseSamples = 0;
 let aiPoseUnsteadyStreak = 0;
 let aiPoseWarnings = 0;
+let aiFaceSamples = 0;
+let aiFaceCenteredTotal = 0;
+let aiFaceMissingStreak = 0;
+let aiFaceOffCenterStreak = 0;
+let aiFaceWarnings = 0;
 const aiAutoStartTimerByScheduleId = new Map();
 const aiAutoStartedScheduleIds = new Set();
 const aiAutoStartGraceMs = 5 * 60 * 1000;
@@ -899,6 +910,11 @@ function resetAiPoseStats() {
   aiPoseSamples = 0;
   aiPoseUnsteadyStreak = 0;
   aiPoseWarnings = 0;
+  aiFaceSamples = 0;
+  aiFaceCenteredTotal = 0;
+  aiFaceMissingStreak = 0;
+  aiFaceOffCenterStreak = 0;
+  aiFaceWarnings = 0;
   setAiPoseBadge("good", "Steady");
 }
 
@@ -906,7 +922,7 @@ function getAiPoseMetrics() {
   const stablePercent = aiPoseSamples ? aiPoseStableTotal / aiPoseSamples : 1;
   return {
     stablePercent: Math.max(0, Math.min(1, stablePercent)),
-    warnings: aiPoseWarnings
+    warnings: aiPoseWarnings + aiFaceWarnings
   };
 }
 
@@ -919,13 +935,15 @@ function startAiPoseMonitor() {
   stopAiPoseMonitor();
   resetAiPoseStats();
   const canvas = document.createElement("canvas");
-  const w = 64;
-  const h = 36;
+  const w = 160;
+  const h = 120;
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return;
   let last = null;
+  const detector = window.FaceDetector ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 }) : null;
+  let faceBusy = false;
 
   aiPoseIntervalId = setInterval(() => {
     const video = localVideo;
@@ -953,11 +971,50 @@ function startAiPoseMonitor() {
         }
 
         const stablePercent = aiPoseSamples ? aiPoseStableTotal / aiPoseSamples : 1;
-        if (stablePercent > 0.78) setAiPoseBadge("good", "Steady");
+        const centeredPercent = aiFaceSamples ? aiFaceCenteredTotal / aiFaceSamples : 1;
+        if (centeredPercent < 0.55) setAiPoseBadge("bad", "Look at camera");
+        else if (stablePercent > 0.78) setAiPoseBadge("good", "Steady");
         else if (stablePercent > 0.52) setAiPoseBadge("warn", "Move less");
         else setAiPoseBadge("bad", "Too shaky");
       }
       last = new Uint8ClampedArray(data);
+
+      if (detector && !faceBusy) {
+        faceBusy = true;
+        detector
+          .detect(canvas)
+          .then((faces) => {
+            const face = Array.isArray(faces) && faces.length ? faces[0] : null;
+            if (!face || !face.boundingBox) {
+              aiFaceSamples += 1;
+              aiFaceMissingStreak += 1;
+              aiFaceOffCenterStreak = 0;
+              if (aiFaceMissingStreak >= 3) {
+                aiFaceWarnings += 1;
+                aiFaceMissingStreak = 0;
+              }
+              return;
+            }
+            const box = face.boundingBox;
+            const cx = (Number(box.x) + Number(box.width) / 2) / w;
+            const cy = (Number(box.y) + Number(box.height) / 2) / h;
+            const sizeOk = Number(box.width) > w * 0.16 && Number(box.height) > h * 0.16;
+            const centered = sizeOk && Math.abs(cx - 0.5) < 0.23 && cy > 0.28 && cy < 0.72;
+            aiFaceSamples += 1;
+            aiFaceCenteredTotal += centered ? 1 : 0;
+            aiFaceMissingStreak = 0;
+            if (!centered) aiFaceOffCenterStreak += 1;
+            else aiFaceOffCenterStreak = 0;
+            if (aiFaceOffCenterStreak >= 4) {
+              aiFaceWarnings += 1;
+              aiFaceOffCenterStreak = 0;
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            faceBusy = false;
+          });
+      }
     } catch {
       return;
     }
@@ -974,7 +1031,16 @@ function startAiTimer() {
   if (!aiTimerEl) return;
   aiTimerEl.textContent = "00:00";
   aiTimerIntervalId = setInterval(() => {
-    aiTimerEl.textContent = formatAiTimer(Date.now() - aiQuestionStartedAt);
+    const now = Date.now();
+    if (aiPreviewEndsAt && now < aiPreviewEndsAt) {
+      aiTimerEl.textContent = formatAiTimer(aiPreviewEndsAt - now);
+      return;
+    }
+    if (aiMediaRecorder && aiMediaRecorder.state === "recording") {
+      aiTimerEl.textContent = formatAiTimer(now - aiRecordingStartAt);
+      return;
+    }
+    aiTimerEl.textContent = "00:00";
   }, 250);
 }
 
@@ -983,6 +1049,11 @@ function setAiMode(active) {
   aiIntro?.classList.toggle("hidden", active);
   aiSessionEl?.classList.toggle("hidden", !active);
   if (!active) {
+    if (aiPreviewTimeoutId) clearTimeout(aiPreviewTimeoutId);
+    aiPreviewTimeoutId = null;
+    if (aiAutoStopTimeoutId) clearTimeout(aiAutoStopTimeoutId);
+    aiAutoStopTimeoutId = null;
+    aiPreviewEndsAt = 0;
     stopAiPoseMonitor();
     stopAiTimer();
     if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
@@ -1064,16 +1135,39 @@ async function tryAutoStartAiInterview({ scheduleId }) {
 function renderAiQuestion() {
   const q = aiQuestions[aiQuestionIndex] || null;
   if (!q) return;
+  if (aiPreviewTimeoutId) clearTimeout(aiPreviewTimeoutId);
+  aiPreviewTimeoutId = null;
+  if (aiAutoStopTimeoutId) clearTimeout(aiAutoStopTimeoutId);
+  aiAutoStopTimeoutId = null;
+  aiCurrentMaxRecordingMs = Math.max(10_000, Number(q.maxRecordingMs) || 120_000);
+  const previewMs = Math.max(0, Number(q.previewMs) || 15_000);
+
   if (aiProgressEl) aiProgressEl.textContent = `Question ${aiQuestionIndex + 1} of ${aiQuestions.length}`;
   if (aiQuestionEl) aiQuestionEl.textContent = q.prompt || "Question";
   if (aiAnswerInput) aiAnswerInput.value = "";
   aiLatestAudioBuffer = null;
   aiAudioChunks = [];
-  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
+  if (aiRecorderMeta) aiRecorderMeta.textContent = previewMs ? `Audio: starts in ${formatAiTimer(previewMs)}` : "Audio: starting...";
   if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
   aiQuestionStartedAt = Date.now();
+  aiPreviewEndsAt = previewMs ? aiQuestionStartedAt + previewMs : 0;
+  if (aiRecordBtn) aiRecordBtn.disabled = true;
+  if (aiStopBtn) aiStopBtn.disabled = true;
   startAiTimer();
   startAiPoseMonitor();
+
+  aiPreviewTimeoutId = setTimeout(() => {
+    aiPreviewTimeoutId = null;
+    aiPreviewEndsAt = 0;
+    startAiRecording()
+      .then(() => {
+        if (aiAutoStopTimeoutId) clearTimeout(aiAutoStopTimeoutId);
+        aiAutoStopTimeoutId = setTimeout(() => {
+          stopAiRecording().catch(() => {});
+        }, aiCurrentMaxRecordingMs);
+      })
+      .catch(() => {});
+  }, previewMs);
 }
 
 async function startAiRecording() {
@@ -1106,7 +1200,9 @@ async function startAiRecording() {
       aiLatestAudioBuffer = null;
       if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
     }
-    aiRecordBtn.disabled = false;
+    if (aiAutoStopTimeoutId) clearTimeout(aiAutoStopTimeoutId);
+    aiAutoStopTimeoutId = null;
+    aiRecordBtn.disabled = true;
     aiStopBtn.disabled = true;
   };
   aiMediaRecorder.start(250);
@@ -1118,10 +1214,22 @@ async function startAiRecording() {
 async function stopAiRecording() {
   if (!aiMediaRecorder) return;
   if (aiMediaRecorder.state !== "recording") return;
-  try {
-    aiMediaRecorder.stop();
-  } catch {
-  }
+  if (aiAutoStopTimeoutId) clearTimeout(aiAutoStopTimeoutId);
+  aiAutoStopTimeoutId = null;
+  const recorder = aiMediaRecorder;
+  await new Promise((resolve) => {
+    const onStop = () => resolve(true);
+    try {
+      recorder.addEventListener("stop", onStop, { once: true });
+      recorder.stop();
+    } catch {
+      try {
+        recorder.removeEventListener("stop", onStop);
+      } catch {
+      }
+      resolve(false);
+    }
+  });
 }
 
 async function startAiInterview({ scheduleId } = {}) {
@@ -1695,6 +1803,15 @@ if (scheduleForm) {
     if (currentUser?.role !== "interviewer") return;
     const studentEmail = String(studentEmailInput.value || "").trim();
     const rawTime = String(scheduleTimeInput.value || "").trim();
+    const aiDescription = String(aiDescriptionInput?.value || "").trim();
+    const aiQuestionsRaw = String(aiQuestionsInput?.value || "").trim();
+    const aiQuestions = aiQuestionsRaw
+      ? aiQuestionsRaw
+          .split("\n")
+          .map((line) => String(line || "").trim())
+          .filter(Boolean)
+          .slice(0, 12)
+      : [];
     let scheduledAt = null;
     if (rawTime) {
       const d = new Date(rawTime);
@@ -1707,7 +1824,11 @@ if (scheduleForm) {
     }
     meetingInfo.classList.add("hidden");
     const res = await new Promise((resolve) => {
-      ensureSocket().emit("schedule-add", { studentEmail, scheduledAt }, (ack) => resolve(ack || { ok: false }));
+      ensureSocket().emit(
+        "schedule-add",
+        { studentEmail, scheduledAt, aiDescription: aiDescription || null, aiQuestions },
+        (ack) => resolve(ack || { ok: false })
+      );
     });
     if (!res.ok) {
       meetingInfo.classList.remove("hidden");
@@ -1715,6 +1836,8 @@ if (scheduleForm) {
       return;
     }
     studentEmailInput.value = "";
+    if (aiDescriptionInput) aiDescriptionInput.value = "";
+    if (aiQuestionsInput) aiQuestionsInput.value = "";
     meetingInfo.classList.remove("hidden");
     meetingInfo.textContent = `Added slot for ${res.entry?.studentEmail || studentEmail}.`;
   });
