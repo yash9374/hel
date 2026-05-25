@@ -44,6 +44,77 @@ const studentSocketIdsByEmail = new Map();
 const interviewerSocketIdsByEmail = new Map();
 const studentActiveRoomByEmail = new Map();
 const admissionByKey = new Map();
+const aiSessionsById = new Map();
+const aiReportsByScheduleId = new Map();
+
+const aiQuestionBank = [
+  {
+    id: "js-async",
+    topic: "JavaScript",
+    seconds: 120,
+    prompt: "Explain the difference between a Promise and async/await. When would you use each?",
+    keywords: ["promise", "async", "await", "then", "catch", "try", "error", "readability"]
+  },
+  {
+    id: "http-api",
+    topic: "Backend",
+    seconds: 120,
+    prompt: "Design a simple REST API for creating and listing interview slots. What endpoints and fields would you include?",
+    keywords: ["rest", "post", "get", "endpoint", "status", "json", "validation", "id"]
+  },
+  {
+    id: "db-index",
+    topic: "Databases",
+    seconds: 120,
+    prompt: "What is an index in a database? When does it help, and what trade-offs does it introduce?",
+    keywords: ["index", "query", "search", "lookup", "write", "storage", "b-tree", "trade"]
+  },
+  {
+    id: "system-debug",
+    topic: "Engineering",
+    seconds: 120,
+    prompt: "A production service is slow. Walk through how you would debug and identify the bottleneck.",
+    keywords: ["metrics", "logs", "trace", "profil", "latency", "database", "cache", "baseline"]
+  },
+  {
+    id: "security-basic",
+    topic: "Security",
+    seconds: 120,
+    prompt: "What are common web security risks (e.g., XSS/CSRF), and how would you mitigate them?",
+    keywords: ["xss", "csrf", "csp", "sanitize", "cookie", "same-site", "token", "headers"]
+  }
+];
+
+function computeKeywordScore(text, keywords) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return { hits: 0, total: keywords.length };
+  let hits = 0;
+  for (const kw of keywords || []) {
+    if (!kw) continue;
+    const k = String(kw).toLowerCase();
+    if (k && t.includes(k)) hits += 1;
+  }
+  return { hits, total: (keywords || []).length };
+}
+
+function clampScore(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function scoreAiAnswer({ text, keywords, stablePercent, poseWarnings }) {
+  const cleaned = String(text || "").trim();
+  const lengthPoints = cleaned.length >= 360 ? 6 : cleaned.length >= 200 ? 5 : cleaned.length >= 120 ? 4 : cleaned.length >= 60 ? 3 : cleaned.length >= 20 ? 2 : cleaned.length > 0 ? 1 : 0;
+  const { hits, total } = computeKeywordScore(cleaned, keywords || []);
+  const keywordPoints = total ? Math.round((hits / total) * 12) : 0;
+  const stability = typeof stablePercent === "number" ? stablePercent : 1;
+  const posturePenalty = Math.round((1 - clampScore(stability, 0, 1)) * 4) + clampScore(Number(poseWarnings || 0), 0, 10);
+  const raw = lengthPoints + keywordPoints;
+  const score = clampScore(raw - posturePenalty, 0, 20);
+  const feedback = total
+    ? `Keywords: ${hits}/${total} · Posture warnings: ${clampScore(Number(poseWarnings || 0), 0, 10)}`
+    : `Posture warnings: ${clampScore(Number(poseWarnings || 0), 0, 10)}`;
+  return { score, feedback, hits, total, posturePenalty };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -302,6 +373,45 @@ async function emitStudentStatus(studentEmail) {
   for (const socketId of socketIds) {
     io.to(socketId).emit("student-status", { schedule: scheduleEntries, admittedRooms });
   }
+}
+
+async function findScheduleEntryForStudent({ scheduleId, studentEmail }) {
+  const email = String(studentEmail || "").trim().toLowerCase();
+  const id = scheduleId != null ? scheduleId : null;
+  if (!email || !id) return { ok: false, error: "Invalid schedule" };
+
+  const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+  if (useDb) {
+    const { data, error } = await supabase
+      .from(scheduleTable)
+      .select("id, student_email, interviewer_email, scheduled_at, room_code, done_at, created_at")
+      .eq("id", id)
+      .eq("student_email", email)
+      .maybeSingle();
+    if (!error && data) {
+      return {
+        ok: true,
+        entry: {
+          id: data.id,
+          studentEmail: String(data.student_email || "").toLowerCase(),
+          interviewerEmail: String(data.interviewer_email || "").toLowerCase(),
+          scheduledAt: data.scheduled_at,
+          roomCode: data.room_code ? String(data.room_code || "").toUpperCase() : null,
+          doneAt: data.done_at,
+          createdAt: data.created_at
+        }
+      };
+    }
+  }
+
+  for (const [interviewerEmail, list] of scheduleByInterviewer.entries()) {
+    for (const entry of list || []) {
+      if (String(entry.id) !== String(id)) continue;
+      if (String(entry.studentEmail || "").toLowerCase() !== email) continue;
+      return { ok: true, entry: { ...entry, interviewerEmail } };
+    }
+  }
+  return { ok: false, error: "Schedule not found" };
 }
 
 async function notifyJoinRequest({ roomCode, studentEmail }) {
@@ -1099,6 +1209,166 @@ io.on("connection", (socket) => {
     emitDashboard(interviewerEmail).catch(() => {});
     emitStudentStatus(updated.studentEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true });
+  });
+
+  socket.on("ai-start", async ({ scheduleId }, ack) => {
+    if (socket.data.user?.role !== "student") {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const studentEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    const found = await findScheduleEntryForStudent({ scheduleId, studentEmail });
+    if (!found.ok) {
+      if (typeof ack === "function") ack({ ok: false, error: found.error || "Schedule not found" });
+      return;
+    }
+    if (found.entry?.doneAt) {
+      if (typeof ack === "function") ack({ ok: false, error: "Interview is completed" });
+      return;
+    }
+
+    const sessionId = crypto.randomUUID();
+    const questions = aiQuestionBank.map((q) => ({
+      id: q.id,
+      topic: q.topic,
+      seconds: q.seconds,
+      prompt: q.prompt
+    }));
+    aiSessionsById.set(sessionId, {
+      sessionId,
+      scheduleId: found.entry.id,
+      studentEmail,
+      interviewerEmail: found.entry.interviewerEmail,
+      startedAt: Date.now(),
+      questions,
+      answers: [],
+      totals: null
+    });
+    if (typeof ack === "function") ack({ ok: true, sessionId, questions });
+  });
+
+  socket.on("ai-answer", async ({ sessionId, questionId, text, audio, meta }, ack) => {
+    if (socket.data.user?.role !== "student") {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const sid = typeof sessionId === "string" ? sessionId : "";
+    const session = aiSessionsById.get(sid);
+    if (!session) {
+      if (typeof ack === "function") ack({ ok: false, error: "Session not found" });
+      return;
+    }
+    const studentEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (!studentEmail || studentEmail !== session.studentEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+
+    const qid = String(questionId || "");
+    const bank = aiQuestionBank.find((q) => q.id === qid) || null;
+    if (!bank) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid question" });
+      return;
+    }
+
+    let audioBuf = null;
+    try {
+      if (audio && (audio instanceof ArrayBuffer || ArrayBuffer.isView(audio))) {
+        const arr = audio instanceof ArrayBuffer ? new Uint8Array(audio) : new Uint8Array(audio.buffer);
+        if (arr.byteLength <= 2_000_000) audioBuf = Buffer.from(arr);
+      }
+    } catch {
+      audioBuf = null;
+    }
+
+    const stablePercent = typeof meta?.stablePercent === "number" ? meta.stablePercent : 1;
+    const poseWarnings = typeof meta?.poseWarnings === "number" ? meta.poseWarnings : 0;
+    const scored = scoreAiAnswer({ text, keywords: bank.keywords, stablePercent, poseWarnings });
+    const answer = {
+      questionId: qid,
+      topic: bank.topic,
+      prompt: bank.prompt,
+      text: String(text || ""),
+      audioBytes: audioBuf ? audioBuf.byteLength : 0,
+      meta: {
+        durationMs: typeof meta?.durationMs === "number" ? meta.durationMs : null,
+        stablePercent,
+        poseWarnings
+      },
+      score: scored.score,
+      feedback: scored.feedback,
+      at: nowIso()
+    };
+
+    session.answers.push(answer);
+    if (typeof ack === "function") ack({ ok: true, score: scored.score, feedback: scored.feedback });
+  });
+
+  socket.on("ai-finish", async ({ sessionId }, ack) => {
+    if (socket.data.user?.role !== "student") {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const sid = typeof sessionId === "string" ? sessionId : "";
+    const session = aiSessionsById.get(sid);
+    if (!session) {
+      if (typeof ack === "function") ack({ ok: false, error: "Session not found" });
+      return;
+    }
+    const studentEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (!studentEmail || studentEmail !== session.studentEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+
+    const breakdown = session.answers.map((a) => ({
+      questionId: a.questionId,
+      topic: a.topic,
+      score: a.score,
+      feedback: a.feedback
+    }));
+    const totalScore = clampScore(breakdown.reduce((sum, a) => sum + (Number(a.score) || 0), 0) * 5, 0, 100);
+    const summaryLines = [
+      `AI interview score: ${totalScore}/100`,
+      `Questions answered: ${breakdown.length}/${aiQuestionBank.length}`
+    ];
+    for (const item of breakdown) summaryLines.push(`${item.topic}: ${item.score}/20`);
+    const summary = summaryLines.join(" · ");
+
+    const report = {
+      scheduleId: session.scheduleId,
+      studentEmail: session.studentEmail,
+      interviewerEmail: session.interviewerEmail,
+      totalScore,
+      breakdown,
+      summary,
+      finishedAt: nowIso()
+    };
+    aiReportsByScheduleId.set(String(session.scheduleId), report);
+    if (session.interviewerEmail) {
+      io.to(`${dashboardRoomPrefix}${session.interviewerEmail}`).emit("ai-report", report);
+    }
+    socket.emit("ai-report", report);
+    if (typeof ack === "function") ack({ ok: true, report });
+  });
+
+  socket.on("ai-get-report", async ({ scheduleId }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const id = scheduleId != null ? String(scheduleId) : null;
+    if (!id) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid schedule" });
+      return;
+    }
+    const report = aiReportsByScheduleId.get(id) || null;
+    if (!report || report.interviewerEmail !== interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "AI report not available" });
+      return;
+    }
+    if (typeof ack === "function") ack({ ok: true, report });
   });
 
   socket.on("disconnect", () => {

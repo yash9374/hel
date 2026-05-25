@@ -167,6 +167,51 @@
             />
             <button class="btn primary" type="submit">Join interview</button>
           </form>
+
+          <div id="aiInterviewCard" class="aiCard hidden">
+            <div class="aiHeader">
+              <div class="aiHeaderLeft">
+                <div class="sectionEyebrow">AI Interview</div>
+                <div class="aiTitle">Automated technical screening</div>
+              </div>
+              <div id="aiPoseBadge" class="aiBadge good">Steady</div>
+            </div>
+
+            <div id="aiIntro" class="aiIntro">
+              <div class="aiIntroText">
+                You’ll answer a short set of questions. Speak clearly, keep your face visible, and stay steady.
+                Your responses are recorded and scored.
+              </div>
+              <div class="row">
+                <button id="aiStartBtn" class="btn primary" type="button">Start AI interview</button>
+                <button id="aiConsentBtn" class="btn" type="button">Review consent</button>
+              </div>
+            </div>
+
+            <div id="aiSession" class="aiSession hidden">
+              <div class="aiProgressRow">
+                <div id="aiProgress" class="aiProgress">Question 1 of 1</div>
+                <div id="aiTimer" class="aiTimer">00:00</div>
+              </div>
+              <div id="aiQuestion" class="aiQuestion">Question</div>
+
+              <div class="aiResponseGrid">
+                <textarea id="aiAnswerInput" class="aiTextarea" placeholder="Type your answer here (optional but recommended)"></textarea>
+                <div class="aiTools">
+                  <button id="aiRecordBtn" class="btn" type="button">Start recording</button>
+                  <button id="aiStopBtn" class="btn" type="button" disabled>Stop</button>
+                  <div id="aiRecorderMeta" class="aiMeta">Audio: not recording</div>
+                  <div id="aiPoseMeta" class="aiMeta">Posture: steady</div>
+                </div>
+              </div>
+
+              <div class="row aiFooter">
+                <button id="aiNextBtn" class="btn primary" type="button">Submit & next</button>
+                <button id="aiFinishBtn" class="btn" type="button">Finish</button>
+              </div>
+              <div id="aiFeedback" class="aiFeedback hidden"></div>
+            </div>
+          </div>
         </div>
 
         <div id="interviewerDashboard" class="dashboard hidden">

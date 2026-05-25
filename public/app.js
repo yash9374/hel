@@ -16,6 +16,23 @@ const studentWaitingBody = document.getElementById("studentWaitingBody");
 const studentWaitingMeta = document.getElementById("studentWaitingMeta");
 const studentJoinForm = document.getElementById("studentJoinForm");
 const studentCodeInput = document.getElementById("studentCodeInput");
+const aiInterviewCard = document.getElementById("aiInterviewCard");
+const aiPoseBadge = document.getElementById("aiPoseBadge");
+const aiIntro = document.getElementById("aiIntro");
+const aiSessionEl = document.getElementById("aiSession");
+const aiStartBtn = document.getElementById("aiStartBtn");
+const aiConsentBtn = document.getElementById("aiConsentBtn");
+const aiProgressEl = document.getElementById("aiProgress");
+const aiTimerEl = document.getElementById("aiTimer");
+const aiQuestionEl = document.getElementById("aiQuestion");
+const aiAnswerInput = document.getElementById("aiAnswerInput");
+const aiRecordBtn = document.getElementById("aiRecordBtn");
+const aiStopBtn = document.getElementById("aiStopBtn");
+const aiRecorderMeta = document.getElementById("aiRecorderMeta");
+const aiPoseMeta = document.getElementById("aiPoseMeta");
+const aiNextBtn = document.getElementById("aiNextBtn");
+const aiFinishBtn = document.getElementById("aiFinishBtn");
+const aiFeedbackEl = document.getElementById("aiFeedback");
 const interviewerDashboardEl = document.getElementById("interviewerDashboard");
 const scheduleForm = document.getElementById("scheduleForm");
 const studentEmailInput = document.getElementById("studentEmailInput");
@@ -55,6 +72,22 @@ let lastDashboard = null;
 let lastStudentStatus = null;
 let autoJoinAttempted = new Set();
 let interviewerTab = "schedule";
+const aiReports = new Map();
+let aiActiveScheduleId = null;
+let aiSessionId = null;
+let aiQuestions = [];
+let aiQuestionIndex = 0;
+let aiQuestionStartedAt = 0;
+let aiTimerIntervalId = null;
+let aiMediaRecorder = null;
+let aiRecordingStartAt = 0;
+let aiAudioChunks = [];
+let aiLatestAudioBuffer = null;
+let aiPoseIntervalId = null;
+let aiPoseStableTotal = 0;
+let aiPoseSamples = 0;
+let aiPoseUnsteadyStreak = 0;
+let aiPoseWarnings = 0;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -501,6 +534,21 @@ function ensureSocket() {
     renderStudentWaiting();
   });
 
+  socket.on("ai-report", (payload) => {
+    const scheduleId = payload?.scheduleId != null ? String(payload.scheduleId) : null;
+    if (scheduleId) aiReports.set(scheduleId, payload);
+    if (currentUser?.role === "interviewer") {
+      renderDashboard();
+      return;
+    }
+    if (currentUser?.role === "student" && payload?.studentEmail) {
+      if (aiFeedbackEl) {
+        aiFeedbackEl.classList.remove("hidden");
+        aiFeedbackEl.textContent = payload?.summary || "AI interview completed.";
+      }
+    }
+  });
+
   socket.on("join-request", ({ studentEmail, roomCode }) => {
     if (currentUser?.role !== "interviewer") return;
     const email = String(studentEmail || "");
@@ -601,6 +649,15 @@ function resetSocket() {
   lastDashboard = null;
   lastStudentStatus = null;
   autoJoinAttempted = new Set();
+  aiActiveScheduleId = null;
+  aiSessionId = null;
+  aiQuestions = [];
+  aiQuestionIndex = 0;
+  aiLatestAudioBuffer = null;
+  if (aiTimerIntervalId) clearInterval(aiTimerIntervalId);
+  aiTimerIntervalId = null;
+  if (aiPoseIntervalId) clearInterval(aiPoseIntervalId);
+  aiPoseIntervalId = null;
 
   if (!socket) return;
   try {
@@ -706,6 +763,33 @@ function renderDashboard() {
       statusPill.textContent = String(entry.status || "scheduled").replace(/_/g, " ");
       actions.appendChild(statusPill);
 
+      const aiReport = aiReports.get(String(entry.id));
+      if (aiReport?.totalScore != null) {
+        const scorePill = document.createElement("div");
+        scorePill.className = "pill good";
+        scorePill.textContent = `AI ${aiReport.totalScore}/100`;
+        actions.appendChild(scorePill);
+
+        const reportBtn = document.createElement("button");
+        reportBtn.type = "button";
+        reportBtn.className = "btn";
+        reportBtn.textContent = "AI report";
+        reportBtn.addEventListener("click", async () => {
+          const res = await new Promise((resolve) => {
+            ensureSocket().emit("ai-get-report", { scheduleId: entry.id }, (ack) => resolve(ack || { ok: false }));
+          });
+          if (!res.ok) {
+            meetingInfo.classList.remove("hidden");
+            meetingInfo.textContent = res.error || "AI report not available";
+            return;
+          }
+          const report = res.report || null;
+          meetingInfo.classList.remove("hidden");
+          meetingInfo.textContent = report?.summary || "AI report loaded.";
+        });
+        actions.appendChild(reportBtn);
+      }
+
       const admitBtn = document.createElement("button");
       admitBtn.type = "button";
       admitBtn.className = "btn";
@@ -784,6 +868,292 @@ function renderDashboard() {
   renderSection(completed, "Completed meetings");
 }
 
+function formatAiTimer(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = String(Math.floor(total / 60)).padStart(2, "0");
+  const s = String(total % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+function setAiPoseBadge(kind, text) {
+  if (!aiPoseBadge) return;
+  aiPoseBadge.classList.toggle("good", kind === "good");
+  aiPoseBadge.classList.toggle("warn", kind === "warn");
+  aiPoseBadge.classList.toggle("bad", kind === "bad");
+  aiPoseBadge.textContent = text || "Steady";
+  if (aiPoseMeta) aiPoseMeta.textContent = `Posture: ${String(text || "steady").toLowerCase()}`;
+}
+
+function resetAiPoseStats() {
+  aiPoseStableTotal = 0;
+  aiPoseSamples = 0;
+  aiPoseUnsteadyStreak = 0;
+  aiPoseWarnings = 0;
+  setAiPoseBadge("good", "Steady");
+}
+
+function getAiPoseMetrics() {
+  const stablePercent = aiPoseSamples ? aiPoseStableTotal / aiPoseSamples : 1;
+  return {
+    stablePercent: Math.max(0, Math.min(1, stablePercent)),
+    warnings: aiPoseWarnings
+  };
+}
+
+function stopAiPoseMonitor() {
+  if (aiPoseIntervalId) clearInterval(aiPoseIntervalId);
+  aiPoseIntervalId = null;
+}
+
+function startAiPoseMonitor() {
+  stopAiPoseMonitor();
+  resetAiPoseStats();
+  const canvas = document.createElement("canvas");
+  const w = 64;
+  const h = 36;
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return;
+  let last = null;
+
+  aiPoseIntervalId = setInterval(() => {
+    const video = localVideo;
+    if (!video) return;
+    if (video.readyState < 2) return;
+    try {
+      ctx.drawImage(video, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      if (last) {
+        let diff = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          diff += Math.abs(data[i] - last[i]);
+          diff += Math.abs(data[i + 1] - last[i + 1]);
+          diff += Math.abs(data[i + 2] - last[i + 2]);
+        }
+        const norm = diff / (w * h * 3 * 255);
+        const stable = norm < 0.06 ? 1 : norm < 0.1 ? 0.6 : 0;
+        aiPoseStableTotal += stable;
+        aiPoseSamples += 1;
+        if (stable === 0) aiPoseUnsteadyStreak += 1;
+        else aiPoseUnsteadyStreak = 0;
+        if (aiPoseUnsteadyStreak >= 4) {
+          aiPoseWarnings += 1;
+          aiPoseUnsteadyStreak = 0;
+        }
+
+        const stablePercent = aiPoseSamples ? aiPoseStableTotal / aiPoseSamples : 1;
+        if (stablePercent > 0.78) setAiPoseBadge("good", "Steady");
+        else if (stablePercent > 0.52) setAiPoseBadge("warn", "Move less");
+        else setAiPoseBadge("bad", "Too shaky");
+      }
+      last = new Uint8ClampedArray(data);
+    } catch {
+      return;
+    }
+  }, 400);
+}
+
+function stopAiTimer() {
+  if (aiTimerIntervalId) clearInterval(aiTimerIntervalId);
+  aiTimerIntervalId = null;
+}
+
+function startAiTimer() {
+  stopAiTimer();
+  if (!aiTimerEl) return;
+  aiTimerEl.textContent = "00:00";
+  aiTimerIntervalId = setInterval(() => {
+    aiTimerEl.textContent = formatAiTimer(Date.now() - aiQuestionStartedAt);
+  }, 250);
+}
+
+function setAiMode(active) {
+  if (!aiInterviewCard) return;
+  aiIntro?.classList.toggle("hidden", active);
+  aiSessionEl?.classList.toggle("hidden", !active);
+  if (!active) {
+    stopAiPoseMonitor();
+    stopAiTimer();
+    if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
+  }
+}
+
+function syncAiInterviewCard(nextSchedule) {
+  if (!aiInterviewCard) return;
+  const sched = nextSchedule && nextSchedule.id != null && !nextSchedule.doneAt ? nextSchedule : null;
+  aiInterviewCard.classList.toggle("hidden", !sched);
+  if (!sched) {
+    setAiMode(false);
+    return;
+  }
+  if (!aiSessionId) aiActiveScheduleId = String(sched.id);
+}
+
+function renderAiQuestion() {
+  const q = aiQuestions[aiQuestionIndex] || null;
+  if (!q) return;
+  if (aiProgressEl) aiProgressEl.textContent = `Question ${aiQuestionIndex + 1} of ${aiQuestions.length}`;
+  if (aiQuestionEl) aiQuestionEl.textContent = q.prompt || "Question";
+  if (aiAnswerInput) aiAnswerInput.value = "";
+  aiLatestAudioBuffer = null;
+  aiAudioChunks = [];
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
+  if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
+  aiQuestionStartedAt = Date.now();
+  startAiTimer();
+  startAiPoseMonitor();
+}
+
+async function startAiRecording() {
+  if (!aiRecordBtn || !aiStopBtn) return;
+  if (aiMediaRecorder && aiMediaRecorder.state === "recording") return;
+  await ensureCamera();
+  const audioTracks = cameraStream?.getAudioTracks?.() || [];
+  if (!audioTracks.length) {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Microphone not available.";
+    return;
+  }
+  const stream = new MediaStream([audioTracks[0]]);
+  let mimeType = "";
+  if (window.MediaRecorder?.isTypeSupported?.("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
+  else if (window.MediaRecorder?.isTypeSupported?.("audio/webm")) mimeType = "audio/webm";
+  aiAudioChunks = [];
+  aiLatestAudioBuffer = null;
+  aiRecordingStartAt = Date.now();
+  aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  aiMediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size) aiAudioChunks.push(e.data);
+  };
+  aiMediaRecorder.onstop = async () => {
+    const blob = new Blob(aiAudioChunks, { type: aiMediaRecorder?.mimeType || "audio/webm" });
+    try {
+      aiLatestAudioBuffer = await blob.arrayBuffer();
+      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded ${formatAiTimer(Date.now() - aiRecordingStartAt)}`;
+    } catch {
+      aiLatestAudioBuffer = null;
+      if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
+    }
+    aiRecordBtn.disabled = false;
+    aiStopBtn.disabled = true;
+  };
+  aiMediaRecorder.start(250);
+  aiRecordBtn.disabled = true;
+  aiStopBtn.disabled = false;
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
+}
+
+async function stopAiRecording() {
+  if (!aiMediaRecorder) return;
+  if (aiMediaRecorder.state !== "recording") return;
+  try {
+    aiMediaRecorder.stop();
+  } catch {
+  }
+}
+
+async function startAiInterview() {
+  if (currentUser?.role !== "student") return;
+  const status = lastStudentStatus;
+  const schedule = Array.isArray(status?.schedule) ? status.schedule : [];
+  const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  const next = sorted.find((e) => e && e.id != null && !e.doneAt) || null;
+  if (!next) return;
+
+  try {
+    await ensureCamera();
+  } catch {
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Camera/microphone permission is required for AI interview.";
+    return;
+  }
+
+  meetingInfo.classList.add("hidden");
+  setAiMode(true);
+  if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
+  try {
+    const res = await new Promise((resolve) => {
+      ensureSocket().emit("ai-start", { scheduleId: next.id }, (ack) => resolve(ack || { ok: false }));
+    });
+    if (!res.ok) {
+      setAiMode(false);
+      meetingInfo.classList.remove("hidden");
+      meetingInfo.textContent = res.error || "Failed to start AI interview";
+      return;
+    }
+    aiActiveScheduleId = String(next.id);
+    aiSessionId = String(res.sessionId || "");
+    aiQuestions = Array.isArray(res.questions) ? res.questions : [];
+    aiQuestionIndex = 0;
+    renderAiQuestion();
+  } catch {
+    setAiMode(false);
+    meetingInfo.classList.remove("hidden");
+    meetingInfo.textContent = "Failed to start AI interview";
+  }
+}
+
+async function submitAiAnswer({ finish }) {
+  if (!aiSessionId) return;
+  const q = aiQuestions[aiQuestionIndex] || null;
+  if (!q) return;
+  if (aiStopBtn && !aiStopBtn.disabled) await stopAiRecording();
+  const { stablePercent, warnings } = getAiPoseMetrics();
+  const payload = {
+    sessionId: aiSessionId,
+    questionId: q.id,
+    text: String(aiAnswerInput?.value || "").trim(),
+    audio: aiLatestAudioBuffer || null,
+    meta: {
+      durationMs: Math.max(0, Date.now() - aiQuestionStartedAt),
+      stablePercent,
+      poseWarnings: warnings
+    }
+  };
+  const res = await new Promise((resolve) => {
+    ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
+  });
+  if (!res.ok) {
+    if (aiFeedbackEl) {
+      aiFeedbackEl.classList.remove("hidden");
+      aiFeedbackEl.textContent = res.error || "Failed to submit answer";
+    }
+    return;
+  }
+  if (aiFeedbackEl) {
+    aiFeedbackEl.classList.remove("hidden");
+    aiFeedbackEl.textContent = res.feedback || `Saved. Score: ${res.score ?? 0}/20`;
+  }
+
+  const nextIndex = aiQuestionIndex + 1;
+  if (finish || nextIndex >= aiQuestions.length) {
+    const fin = await new Promise((resolve) => {
+      ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
+    });
+    if (!fin.ok) {
+      if (aiFeedbackEl) {
+        aiFeedbackEl.classList.remove("hidden");
+        aiFeedbackEl.textContent = fin.error || "Failed to finish AI interview";
+      }
+      return;
+    }
+    const report = fin.report || null;
+    if (aiFeedbackEl) {
+      aiFeedbackEl.classList.remove("hidden");
+      aiFeedbackEl.textContent = report?.summary || "AI interview completed.";
+    }
+    stopAiPoseMonitor();
+    stopAiTimer();
+    if (aiNextBtn) aiNextBtn.disabled = true;
+    if (aiFinishBtn) aiFinishBtn.disabled = true;
+    return;
+  }
+
+  aiQuestionIndex = nextIndex;
+  renderAiQuestion();
+}
+
 function renderStudentWaiting() {
   if (currentUser?.role !== "student") return;
   const status = lastStudentStatus;
@@ -791,6 +1161,7 @@ function renderStudentWaiting() {
     studentWaitingBody.textContent = "Waiting for interviewer…";
     studentWaitingMeta.textContent = "";
     if (studentJoinForm) studentJoinForm.classList.add("hidden");
+    if (aiInterviewCard) aiInterviewCard.classList.add("hidden");
     return;
   }
 
@@ -798,6 +1169,7 @@ function renderStudentWaiting() {
   const admittedRooms = Array.isArray(status.admittedRooms) ? status.admittedRooms : [];
   const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const next = sorted[0] || null;
+  syncAiInterviewCard(next);
 
   if (next) {
     studentWaitingBody.textContent = `Your interview time: ${formatLocalTime(next.scheduledAt)}`;
@@ -1285,6 +1657,51 @@ if (scheduleTimeBtn && scheduleTimeInput) {
       scheduleTimeInput.click();
     } catch {
     }
+  });
+}
+
+if (aiConsentBtn) {
+  aiConsentBtn.addEventListener("click", () => {
+    const text =
+      "Consent notice: This AI interview records your audio response (and may evaluate steadiness via camera motion). Use this only with informed consent and in compliance with applicable laws and company policy.";
+    try {
+      window.alert(text);
+    } catch {
+    }
+  });
+}
+
+if (aiStartBtn) {
+  aiStartBtn.addEventListener("click", async () => {
+    aiStartBtn.disabled = true;
+    if (aiNextBtn) aiNextBtn.disabled = false;
+    if (aiFinishBtn) aiFinishBtn.disabled = false;
+    await startAiInterview();
+    aiStartBtn.disabled = false;
+  });
+}
+
+if (aiRecordBtn) {
+  aiRecordBtn.addEventListener("click", () => {
+    startAiRecording().catch(() => {});
+  });
+}
+
+if (aiStopBtn) {
+  aiStopBtn.addEventListener("click", () => {
+    stopAiRecording().catch(() => {});
+  });
+}
+
+if (aiNextBtn) {
+  aiNextBtn.addEventListener("click", () => {
+    submitAiAnswer({ finish: false }).catch(() => {});
+  });
+}
+
+if (aiFinishBtn) {
+  aiFinishBtn.addEventListener("click", () => {
+    submitAiAnswer({ finish: true }).catch(() => {});
   });
 }
 
