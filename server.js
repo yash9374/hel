@@ -47,6 +47,13 @@ const admissionByKey = new Map();
 const aiSessionsById = new Map();
 const aiReportsByScheduleId = new Map();
 
+const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const openaiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const deepgramModel = process.env.DEEPGRAM_MODEL || "nova-2";
+const deepgramLanguage = process.env.DEEPGRAM_LANGUAGE || "en";
+const deepgramMimeType = process.env.DEEPGRAM_MIME_TYPE || "audio/webm";
+
 const aiQuestionBank = [
   {
     id: "js-async",
@@ -85,6 +92,117 @@ const aiQuestionBank = [
   }
 ];
 
+function computePosturePenalty(stablePercent, poseWarnings) {
+  const stability = typeof stablePercent === "number" ? stablePercent : 1;
+  const warnings = clampScore(Number(poseWarnings || 0), 0, 10);
+  return Math.round((1 - clampScore(stability, 0, 1)) * 4) + warnings;
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      const err = new Error("Request failed");
+      err.status = res.status;
+      err.body = json || text;
+      throw err;
+    }
+    return json;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function transcribeWithDeepgram({ audioBuf, mimeType }) {
+  if (!deepgramApiKey || !audioBuf || !audioBuf.byteLength) return { ok: false, transcript: "" };
+  const url = new URL("https://api.deepgram.com/v1/listen");
+  url.searchParams.set("model", deepgramModel);
+  url.searchParams.set("smart_format", "true");
+  url.searchParams.set("punctuate", "true");
+  if (deepgramLanguage) url.searchParams.set("language", deepgramLanguage);
+
+  const json = await fetchJsonWithTimeout(
+    url.toString(),
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${deepgramApiKey}`,
+        "Content-Type": mimeType || deepgramMimeType
+      },
+      body: audioBuf
+    },
+    25_000
+  );
+
+  const transcript = String(
+    json?.results?.channels?.[0]?.alternatives?.[0]?.transcript || ""
+  ).trim();
+  return { ok: true, transcript };
+}
+
+async function scoreWithOpenAI({ topic, prompt, keywords, answerText }) {
+  if (!openaiApiKey) return { ok: false };
+  const trimmed = String(answerText || "").trim();
+  if (!trimmed) return { ok: true, baseScore: 0, feedback: "No answer provided." };
+
+  const json = await fetchJsonWithTimeout(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: openaiModel,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You grade interview answers. Return strict JSON only. Score from 0 to 20 based on correctness, completeness, clarity, and use of relevant concepts. Keep feedback to 1-2 sentences, actionable, and avoid mentioning internal policies."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              topic: String(topic || ""),
+              question: String(prompt || ""),
+              keywords: Array.isArray(keywords) ? keywords : [],
+              answer: trimmed,
+              output_format: {
+                baseScore: "integer 0-20",
+                feedback: "string"
+              }
+            })
+          }
+        ]
+      })
+    },
+    20_000
+  );
+
+  const raw = String(json?.choices?.[0]?.message?.content || "").trim();
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  const baseScore = clampScore(Math.round(Number(parsed?.baseScore ?? parsed?.score ?? 0)), 0, 20);
+  const feedback = String(parsed?.feedback || "").trim() || "Answer recorded.";
+  return { ok: true, baseScore, feedback };
+}
+
 function computeKeywordScore(text, keywords) {
   const t = String(text || "").toLowerCase();
   if (!t) return { hits: 0, total: keywords.length };
@@ -106,8 +224,7 @@ function scoreAiAnswer({ text, keywords, stablePercent, poseWarnings }) {
   const lengthPoints = cleaned.length >= 360 ? 6 : cleaned.length >= 200 ? 5 : cleaned.length >= 120 ? 4 : cleaned.length >= 60 ? 3 : cleaned.length >= 20 ? 2 : cleaned.length > 0 ? 1 : 0;
   const { hits, total } = computeKeywordScore(cleaned, keywords || []);
   const keywordPoints = total ? Math.round((hits / total) * 12) : 0;
-  const stability = typeof stablePercent === "number" ? stablePercent : 1;
-  const posturePenalty = Math.round((1 - clampScore(stability, 0, 1)) * 4) + clampScore(Number(poseWarnings || 0), 0, 10);
+  const posturePenalty = computePosturePenalty(stablePercent, poseWarnings);
   const raw = lengthPoints + keywordPoints;
   const score = clampScore(raw - posturePenalty, 0, 20);
   const feedback = total
@@ -1283,25 +1400,69 @@ io.on("connection", (socket) => {
 
     const stablePercent = typeof meta?.stablePercent === "number" ? meta.stablePercent : 1;
     const poseWarnings = typeof meta?.poseWarnings === "number" ? meta.poseWarnings : 0;
-    const scored = scoreAiAnswer({ text, keywords: bank.keywords, stablePercent, poseWarnings });
+    const posturePenalty = computePosturePenalty(stablePercent, poseWarnings);
+
+    let transcript = "";
+    if (audioBuf) {
+      try {
+        const dg = await transcribeWithDeepgram({ audioBuf, mimeType: deepgramMimeType });
+        if (dg.ok) transcript = dg.transcript || "";
+      } catch {
+        transcript = "";
+      }
+    }
+
+    const typed = String(text || "").trim();
+    const answerText = typed || transcript || "";
+
+    let score = 0;
+    let feedback = "";
+    let scoringProvider = "heuristic";
+    if (openaiApiKey) {
+      try {
+        const gpt = await scoreWithOpenAI({
+          topic: bank.topic,
+          prompt: bank.prompt,
+          keywords: bank.keywords,
+          answerText
+        });
+        if (gpt.ok) {
+          scoringProvider = "openai";
+          score = clampScore(Number(gpt.baseScore || 0) - posturePenalty, 0, 20);
+          const warnings = clampScore(Number(poseWarnings || 0), 0, 10);
+          feedback = warnings ? `${gpt.feedback} · Posture warnings: ${warnings}` : gpt.feedback;
+        }
+      } catch {
+      }
+    }
+
+    if (scoringProvider !== "openai") {
+      const scored = scoreAiAnswer({ text: answerText, keywords: bank.keywords, stablePercent, poseWarnings });
+      score = scored.score;
+      feedback = scored.feedback;
+    }
     const answer = {
       questionId: qid,
       topic: bank.topic,
       prompt: bank.prompt,
       text: String(text || ""),
+      transcript: transcript || null,
+      evaluatedText: answerText,
       audioBytes: audioBuf ? audioBuf.byteLength : 0,
       meta: {
         durationMs: typeof meta?.durationMs === "number" ? meta.durationMs : null,
         stablePercent,
         poseWarnings
       },
-      score: scored.score,
-      feedback: scored.feedback,
+      score,
+      feedback,
+      scoringProvider,
+      posturePenalty,
       at: nowIso()
     };
 
     session.answers.push(answer);
-    if (typeof ack === "function") ack({ ok: true, score: scored.score, feedback: scored.feedback });
+    if (typeof ack === "function") ack({ ok: true, score, feedback });
   });
 
   socket.on("ai-finish", async ({ sessionId }, ack) => {
@@ -1393,7 +1554,82 @@ io.on("connection", (socket) => {
   });
 });
 
+const aiAutoStartEnabled = process.env.AI_AUTO_START_AT_SCHEDULED !== "false";
+const aiAutoStartGraceMs = Math.max(5_000, Number(process.env.AI_AUTO_START_GRACE_MS) || 5 * 60 * 1000);
+const aiAutoStartPollMs = Math.max(5_000, Number(process.env.AI_AUTO_START_POLL_MS) || 15_000);
+const aiAutoStartSentAtByScheduleId = new Map();
+
+function pruneAiAutoStartSent() {
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [scheduleId, at] of aiAutoStartSentAtByScheduleId.entries()) {
+    if (at < cutoff) aiAutoStartSentAtByScheduleId.delete(scheduleId);
+  }
+}
+
+async function listDueSchedulesForAutoStart({ fromIso, toIso }) {
+  const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+  if (useDb) {
+    const { data, error } = await supabase
+      .from(scheduleTable)
+      .select("id, student_email, interviewer_email, scheduled_at, done_at")
+      .is("done_at", null)
+      .gte("scheduled_at", fromIso)
+      .lte("scheduled_at", toIso);
+    if (!error) {
+      return (data || []).map((row) => ({
+        id: row.id,
+        studentEmail: String(row.student_email || "").toLowerCase(),
+        interviewerEmail: String(row.interviewer_email || "").toLowerCase(),
+        scheduledAt: row.scheduled_at,
+        doneAt: row.done_at
+      }));
+    }
+  }
+
+  const due = [];
+  for (const [interviewerEmail, list] of scheduleByInterviewer.entries()) {
+    for (const entry of list || []) {
+      if (!entry || entry.doneAt) continue;
+      const iso = String(entry.scheduledAt || "");
+      if (iso >= fromIso && iso <= toIso) {
+        due.push({ ...entry, interviewerEmail });
+      }
+    }
+  }
+  return due;
+}
+
+async function emitAiAutoStarts() {
+  if (!aiAutoStartEnabled) return;
+  pruneAiAutoStartSent();
+  const now = Date.now();
+  const fromIso = new Date(now - aiAutoStartGraceMs).toISOString();
+  const toIso = new Date(now).toISOString();
+  const due = await listDueSchedulesForAutoStart({ fromIso, toIso });
+  for (const entry of due) {
+    const scheduleId = entry?.id != null ? String(entry.id) : null;
+    const studentEmail = String(entry?.studentEmail || "").toLowerCase();
+    if (!scheduleId || !studentEmail) continue;
+    if (aiAutoStartSentAtByScheduleId.has(scheduleId)) continue;
+    const socketIds = studentSocketIdsByEmail.get(studentEmail);
+    if (!socketIds?.size) continue;
+    for (const sid of socketIds) {
+      io.to(sid).emit("ai-scheduled-start", { scheduleId, scheduledAt: entry.scheduledAt });
+    }
+    aiAutoStartSentAtByScheduleId.set(scheduleId, Date.now());
+  }
+}
+
+function startAiAutoStartLoop() {
+  if (!aiAutoStartEnabled) return;
+  emitAiAutoStarts().catch(() => {});
+  setInterval(() => {
+    emitAiAutoStarts().catch(() => {});
+  }, aiAutoStartPollMs);
+}
+
 const port = Number(process.env.PORT) || 3000;
 server.listen(port, "0.0.0.0", () => {
   console.log(`listening on ${port}`);
+  startAiAutoStartLoop();
 });

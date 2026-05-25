@@ -88,6 +88,9 @@ let aiPoseStableTotal = 0;
 let aiPoseSamples = 0;
 let aiPoseUnsteadyStreak = 0;
 let aiPoseWarnings = 0;
+const aiAutoStartTimerByScheduleId = new Map();
+const aiAutoStartedScheduleIds = new Set();
+const aiAutoStartGraceMs = 5 * 60 * 1000;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -532,6 +535,13 @@ function ensureSocket() {
   socket.on("student-status", (payload) => {
     lastStudentStatus = payload || null;
     renderStudentWaiting();
+    syncAiAutoStartTimers();
+  });
+
+  socket.on("ai-scheduled-start", ({ scheduleId }) => {
+    const id = scheduleId != null ? String(scheduleId) : null;
+    if (!id) return;
+    tryAutoStartAiInterview({ scheduleId: id }).catch(() => {});
   });
 
   socket.on("ai-report", (payload) => {
@@ -990,6 +1000,67 @@ function syncAiInterviewCard(nextSchedule) {
   if (!aiSessionId) aiActiveScheduleId = String(sched.id);
 }
 
+function syncAiAutoStartTimers() {
+  if (currentUser?.role !== "student") return;
+  const status = lastStudentStatus;
+  const schedule = Array.isArray(status?.schedule) ? status.schedule : [];
+  const activeIds = new Set();
+
+  for (const entry of schedule) {
+    if (!entry || entry.id == null || entry.doneAt) continue;
+    const id = String(entry.id);
+    activeIds.add(id);
+    if (aiAutoStartedScheduleIds.has(id)) continue;
+    if (aiAutoStartTimerByScheduleId.has(id)) continue;
+
+    const scheduledTs = entry.scheduledAt ? new Date(entry.scheduledAt).getTime() : NaN;
+    if (Number.isNaN(scheduledTs)) continue;
+    const now = Date.now();
+    const delayMs = scheduledTs - now;
+
+    if (delayMs <= 0) {
+      if (now - scheduledTs <= aiAutoStartGraceMs) {
+        tryAutoStartAiInterview({ scheduleId: id }).catch(() => {});
+      }
+      continue;
+    }
+
+    const timeoutId = setTimeout(() => {
+      aiAutoStartTimerByScheduleId.delete(id);
+      tryAutoStartAiInterview({ scheduleId: id }).catch(() => {});
+    }, Math.min(delayMs, 2_147_000_000));
+    aiAutoStartTimerByScheduleId.set(id, timeoutId);
+  }
+
+  for (const [id, timeoutId] of aiAutoStartTimerByScheduleId.entries()) {
+    if (activeIds.has(id)) continue;
+    clearTimeout(timeoutId);
+    aiAutoStartTimerByScheduleId.delete(id);
+  }
+}
+
+async function tryAutoStartAiInterview({ scheduleId }) {
+  if (currentUser?.role !== "student") return false;
+  const id = scheduleId != null ? String(scheduleId) : null;
+  if (!id) return false;
+  if (aiSessionId) return false;
+  if (aiAutoStartedScheduleIds.has(id)) return false;
+
+  const status = lastStudentStatus;
+  const schedule = Array.isArray(status?.schedule) ? status.schedule : [];
+  const target = schedule.find((e) => e && e.id != null && String(e.id) === id && !e.doneAt) || null;
+  if (!target) return false;
+
+  if (aiStartBtn) aiStartBtn.disabled = true;
+  if (aiNextBtn) aiNextBtn.disabled = false;
+  if (aiFinishBtn) aiFinishBtn.disabled = false;
+
+  const ok = await startAiInterview({ scheduleId: id });
+  if (ok) aiAutoStartedScheduleIds.add(id);
+  if (aiStartBtn) aiStartBtn.disabled = false;
+  return ok;
+}
+
 function renderAiQuestion() {
   const q = aiQuestions[aiQuestionIndex] || null;
   if (!q) return;
@@ -1053,20 +1124,24 @@ async function stopAiRecording() {
   }
 }
 
-async function startAiInterview() {
-  if (currentUser?.role !== "student") return;
+async function startAiInterview({ scheduleId } = {}) {
+  if (currentUser?.role !== "student") return false;
   const status = lastStudentStatus;
   const schedule = Array.isArray(status?.schedule) ? status.schedule : [];
   const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
-  const next = sorted.find((e) => e && e.id != null && !e.doneAt) || null;
-  if (!next) return;
+  const requestedId = scheduleId != null ? String(scheduleId) : null;
+  const next =
+    (requestedId ? sorted.find((e) => e && e.id != null && String(e.id) === requestedId) : null) ||
+    sorted.find((e) => e && e.id != null && !e.doneAt) ||
+    null;
+  if (!next || next.doneAt) return false;
 
   try {
     await ensureCamera();
   } catch {
     meetingInfo.classList.remove("hidden");
     meetingInfo.textContent = "Camera/microphone permission is required for AI interview.";
-    return;
+    return false;
   }
 
   meetingInfo.classList.add("hidden");
@@ -1080,17 +1155,19 @@ async function startAiInterview() {
       setAiMode(false);
       meetingInfo.classList.remove("hidden");
       meetingInfo.textContent = res.error || "Failed to start AI interview";
-      return;
+      return false;
     }
     aiActiveScheduleId = String(next.id);
     aiSessionId = String(res.sessionId || "");
     aiQuestions = Array.isArray(res.questions) ? res.questions : [];
     aiQuestionIndex = 0;
     renderAiQuestion();
+    return true;
   } catch {
     setAiMode(false);
     meetingInfo.classList.remove("hidden");
     meetingInfo.textContent = "Failed to start AI interview";
+    return false;
   }
 }
 
@@ -1168,7 +1245,7 @@ function renderStudentWaiting() {
   const schedule = Array.isArray(status.schedule) ? status.schedule : [];
   const admittedRooms = Array.isArray(status.admittedRooms) ? status.admittedRooms : [];
   const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
-  const next = sorted[0] || null;
+  const next = sorted.find((e) => e && e.id != null && !e.doneAt) || null;
   syncAiInterviewCard(next);
 
   if (next) {
