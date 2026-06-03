@@ -393,21 +393,41 @@ async function listScheduleEntriesForInterviewer(interviewerEmail) {
   const useDb = await ensureScheduleDbAvailable();
   if (!useDb) return getInterviewerSchedule(email);
 
-  const { data, error } = await supabase
+  const primary = await supabase
     .from(scheduleTable)
-    .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+    .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at, interview_mode")
     .eq("interviewer_email", email)
     .order("scheduled_at", { ascending: true });
-  if (error) return getInterviewerSchedule(email);
+  if (primary.error) {
+    const msg = String(primary.error?.message || "").toLowerCase();
+    if (!msg.includes("column") || !msg.includes("interview_mode")) return getInterviewerSchedule(email);
+    const fallback = await supabase
+      .from(scheduleTable)
+      .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+      .eq("interviewer_email", email)
+      .order("scheduled_at", { ascending: true });
+    if (fallback.error) return getInterviewerSchedule(email);
+    return (fallback.data || []).map((row) => ({
+      id: row.id,
+      studentEmail: String(row.student_email || "").toLowerCase(),
+      scheduledAt: row.scheduled_at,
+      roomCode: row.room_code ? String(row.room_code || "").toUpperCase() : null,
+      createdAt: row.created_at,
+      doneAt: row.done_at,
+      admittedAt: row.admitted_at,
+      interviewMode: "manual"
+    }));
+  }
 
-  return (data || []).map((row) => ({
+  return (primary.data || []).map((row) => ({
     id: row.id,
     studentEmail: String(row.student_email || "").toLowerCase(),
     scheduledAt: row.scheduled_at,
     roomCode: row.room_code ? String(row.room_code || "").toUpperCase() : null,
     createdAt: row.created_at,
     doneAt: row.done_at,
-    admittedAt: row.admitted_at
+    admittedAt: row.admitted_at,
+    interviewMode: normalizeInterviewMode(row.interview_mode)
   }));
 }
 
@@ -421,7 +441,10 @@ async function computeDashboard(interviewerEmail) {
   const schedule = scheduleEntries.map((entry) => {
     const online = studentSocketIdsByEmail.get(entry.studentEmail)?.size ? true : false;
     const activeRoom = studentActiveRoomByEmail.get(entry.studentEmail) || null;
-    const admitted = Boolean(entry.admittedAt) || isStudentAdmitted(entry.roomCode, entry.studentEmail);
+    const admitted =
+      entry.interviewMode === "manual"
+        ? Boolean(entry.admittedAt) || isStudentAdmitted(entry.roomCode, entry.studentEmail)
+        : false;
     const status = computeScheduleEntryStatus({ entry, online, activeRoom, admitted });
     const studentProfile = usersMap.get(String(entry.studentEmail || "").toLowerCase());
     const interviewerProfile = usersMap.get(String(interviewerEmail || "").toLowerCase());
@@ -469,15 +492,30 @@ async function emitStudentStatus(studentEmail) {
   const useDb = await ensureScheduleDbAvailable();
   let scheduleEntries = [];
   if (useDb) {
-    const { data, error } = await supabase
+    const primary = await supabase
       .from(scheduleTable)
-      .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+      .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at, interview_mode")
       .eq("student_email", email)
       .order("scheduled_at", { ascending: true });
-    if (!error) {
-      const interviewerEmails = (data || []).map((r) => String(r.interviewer_email || "").toLowerCase());
+    let rows = null;
+    if (!primary.error) rows = primary.data || [];
+    else {
+      const msg = String(primary.error?.message || "").toLowerCase();
+      if (!msg.includes("column") || !msg.includes("interview_mode")) rows = null;
+      else {
+        const fallback = await supabase
+          .from(scheduleTable)
+          .select("id, student_email, interviewer_email, scheduled_at, room_code, admitted_at, done_at, created_at")
+          .eq("student_email", email)
+          .order("scheduled_at", { ascending: true });
+        if (!fallback.error) rows = (fallback.data || []).map((r) => ({ ...r, interview_mode: "manual" }));
+      }
+    }
+
+    if (rows) {
+      const interviewerEmails = rows.map((r) => String(r.interviewer_email || "").toLowerCase());
       const usersMap = await getUsersByEmails(interviewerEmails);
-      scheduleEntries = (data || []).map((row) => {
+      scheduleEntries = rows.map((row) => {
         const interviewerEmail = String(row.interviewer_email || "").toLowerCase();
         const interviewerProfile = usersMap.get(interviewerEmail);
         return {
@@ -489,7 +527,8 @@ async function emitStudentStatus(studentEmail) {
           roomCode: row.room_code ? String(row.room_code || "").toUpperCase() : null,
           createdAt: row.created_at,
           doneAt: row.done_at,
-          admittedAt: row.admitted_at
+          admittedAt: row.admitted_at,
+          interviewMode: normalizeInterviewMode(row.interview_mode)
         };
       });
     }
@@ -522,25 +561,52 @@ async function findScheduleEntryForStudent({ scheduleId, studentEmail }) {
 
   const useDb = supabase ? await ensureScheduleDbAvailable() : false;
   if (useDb) {
-    const { data, error } = await supabase
+    const primary = await supabase
       .from(scheduleTable)
-      .select("id, student_email, interviewer_email, scheduled_at, room_code, done_at, created_at")
+      .select("id, student_email, interviewer_email, scheduled_at, room_code, done_at, created_at, interview_mode")
       .eq("id", id)
       .eq("student_email", email)
       .maybeSingle();
-    if (!error && data) {
+    if (!primary.error && primary.data) {
       return {
         ok: true,
         entry: {
-          id: data.id,
-          studentEmail: String(data.student_email || "").toLowerCase(),
-          interviewerEmail: String(data.interviewer_email || "").toLowerCase(),
-          scheduledAt: data.scheduled_at,
-          roomCode: data.room_code ? String(data.room_code || "").toUpperCase() : null,
-          doneAt: data.done_at,
-          createdAt: data.created_at
+          id: primary.data.id,
+          studentEmail: String(primary.data.student_email || "").toLowerCase(),
+          interviewerEmail: String(primary.data.interviewer_email || "").toLowerCase(),
+          scheduledAt: primary.data.scheduled_at,
+          roomCode: primary.data.room_code ? String(primary.data.room_code || "").toUpperCase() : null,
+          doneAt: primary.data.done_at,
+          createdAt: primary.data.created_at,
+          interviewMode: normalizeInterviewMode(primary.data.interview_mode)
         }
       };
+    }
+    if (primary.error) {
+      const msg = String(primary.error?.message || "").toLowerCase();
+      if (msg.includes("column") && msg.includes("interview_mode")) {
+        const fallback = await supabase
+          .from(scheduleTable)
+          .select("id, student_email, interviewer_email, scheduled_at, room_code, done_at, created_at")
+          .eq("id", id)
+          .eq("student_email", email)
+          .maybeSingle();
+        if (!fallback.error && fallback.data) {
+          return {
+            ok: true,
+            entry: {
+              id: fallback.data.id,
+              studentEmail: String(fallback.data.student_email || "").toLowerCase(),
+              interviewerEmail: String(fallback.data.interviewer_email || "").toLowerCase(),
+              scheduledAt: fallback.data.scheduled_at,
+              roomCode: fallback.data.room_code ? String(fallback.data.room_code || "").toUpperCase() : null,
+              doneAt: fallback.data.done_at,
+              createdAt: fallback.data.created_at,
+              interviewMode: "manual"
+            }
+          };
+        }
+      }
     }
   }
 
@@ -699,6 +765,12 @@ function normalizeRole(role) {
   const r = String(role || "").trim().toLowerCase();
   if (r === "student" || r === "interviewer") return r;
   return null;
+}
+
+function normalizeInterviewMode(mode) {
+  const v = String(mode || "").trim().toLowerCase();
+  if (v === "ai") return "ai";
+  return "manual";
 }
 
 function isSafeExamBrowserUserAgent(userAgent) {
@@ -1077,7 +1149,7 @@ io.on("connection", (socket) => {
       });
   });
 
-  socket.on("schedule-add", async ({ studentEmail, scheduledAt }, ack) => {
+  socket.on("schedule-add", async ({ studentEmail, scheduledAt, interviewMode }, ack) => {
     const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
     if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
@@ -1093,6 +1165,7 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid scheduled time" });
       return;
     }
+    const mode = normalizeInterviewMode(interviewMode);
 
     if (supabase) {
       const studentResult = await getUserByEmail(sEmail);
@@ -1115,23 +1188,43 @@ io.on("connection", (socket) => {
       roomCode: null,
       createdAt: nowIso(),
       admittedAt: null,
-      doneAt: null
+      doneAt: null,
+      interviewMode: mode
     };
 
     const useDb = await ensureScheduleDbAvailable();
     if (useDb) {
-      const { data, error } = await supabase
+      const primary = await supabase
         .from(scheduleTable)
         .insert({
           student_email: sEmail,
           interviewer_email: interviewerEmail,
           scheduled_at: iso,
-          created_at: entry.createdAt
+          created_at: entry.createdAt,
+          interview_mode: mode
         })
         .select("id")
         .maybeSingle();
-      if (!error && data?.id) entry.id = data.id;
-      if (error) upsertScheduleEntry(interviewerEmail, entry);
+      if (!primary.error && primary.data?.id) entry.id = primary.data.id;
+      if (primary.error) {
+        const msg = String(primary.error?.message || "").toLowerCase();
+        if (msg.includes("column") && msg.includes("interview_mode")) {
+          const fallback = await supabase
+            .from(scheduleTable)
+            .insert({
+              student_email: sEmail,
+              interviewer_email: interviewerEmail,
+              scheduled_at: iso,
+              created_at: entry.createdAt
+            })
+            .select("id")
+            .maybeSingle();
+          if (!fallback.error && fallback.data?.id) entry.id = fallback.data.id;
+          if (fallback.error) upsertScheduleEntry(interviewerEmail, entry);
+        } else {
+          upsertScheduleEntry(interviewerEmail, entry);
+        }
+      }
     } else {
       upsertScheduleEntry(interviewerEmail, entry);
     }
@@ -1206,13 +1299,32 @@ io.on("connection", (socket) => {
 
     const useDb = supabase ? await ensureScheduleDbAvailable() : false;
     if (useDb) {
-      const { data, error } = await supabase
+      const primary = await supabase
         .from(scheduleTable)
-        .select("id, student_email, room_code")
+        .select("id, student_email, room_code, interview_mode")
         .eq("id", scheduleId)
         .eq("interviewer_email", interviewerEmail)
         .maybeSingle();
-      if (!error && data) {
+      let data = primary.data || null;
+      if (primary.error) {
+        const msg = String(primary.error?.message || "").toLowerCase();
+        if (msg.includes("column") && msg.includes("interview_mode")) {
+          const fallback = await supabase
+            .from(scheduleTable)
+            .select("id, student_email, room_code")
+            .eq("id", scheduleId)
+            .eq("interviewer_email", interviewerEmail)
+            .maybeSingle();
+          if (!fallback.error) data = fallback.data ? { ...fallback.data, interview_mode: "manual" } : null;
+        }
+      }
+
+      if (data) {
+        const mode = normalizeInterviewMode(data.interview_mode);
+        if (mode === "ai") {
+          if (typeof ack === "function") ack({ ok: false, error: "AI interview does not use a meeting code" });
+          return;
+        }
         const existingCode = data.room_code ? String(data.room_code || "").toUpperCase() : null;
         let roomCode = existingCode;
         if (!roomCode) {
@@ -1242,6 +1354,10 @@ io.on("connection", (socket) => {
     }
 
     const current = list[idx];
+    if (normalizeInterviewMode(current.interviewMode) === "ai") {
+      if (typeof ack === "function") ack({ ok: false, error: "AI interview does not use a meeting code" });
+      return;
+    }
     let code = current.roomCode || null;
     if (!code) {
       const created = await createMeetingCodeForSchedule({ interviewerEmail });
@@ -1264,6 +1380,10 @@ io.on("connection", (socket) => {
     }
 
     const admit = async (entry) => {
+      if (normalizeInterviewMode(entry.interviewMode) === "ai") {
+        if (typeof ack === "function") ack({ ok: false, error: "AI interview does not require admission" });
+        return;
+      }
       const key = admissionKey(entry.roomCode, entry.studentEmail);
       admissionByKey.set(key, {
         admittedBy: interviewerEmail,
@@ -1281,13 +1401,32 @@ io.on("connection", (socket) => {
 
     const useDb = supabase ? await ensureScheduleDbAvailable() : false;
     if (useDb) {
-      const { data, error } = await supabase
+      const primary = await supabase
         .from(scheduleTable)
-        .select("id, student_email, room_code")
+        .select("id, student_email, room_code, interview_mode")
         .eq("id", scheduleId)
         .eq("interviewer_email", interviewerEmail)
         .maybeSingle();
-      if (!error && data) {
+      let data = primary.data || null;
+      if (primary.error) {
+        const msg = String(primary.error?.message || "").toLowerCase();
+        if (msg.includes("column") && msg.includes("interview_mode")) {
+          const fallback = await supabase
+            .from(scheduleTable)
+            .select("id, student_email, room_code")
+            .eq("id", scheduleId)
+            .eq("interviewer_email", interviewerEmail)
+            .maybeSingle();
+          if (!fallback.error) data = fallback.data ? { ...fallback.data, interview_mode: "manual" } : null;
+        }
+      }
+
+      if (data) {
+        const mode = normalizeInterviewMode(data.interview_mode);
+        if (mode === "ai") {
+          if (typeof ack === "function") ack({ ok: false, error: "AI interview does not require admission" });
+          return;
+        }
         const roomCode = data.room_code ? String(data.room_code || "").toUpperCase() : null;
         if (!roomCode) {
           if (typeof ack === "function") ack({ ok: false, error: "Join to create a code first" });
@@ -1311,6 +1450,10 @@ io.on("connection", (socket) => {
     const entry = list.find((e) => e.id === scheduleId);
     if (!entry) {
       if (typeof ack === "function") ack({ ok: false, error: "Schedule not found" });
+      return;
+    }
+    if (normalizeInterviewMode(entry.interviewMode) === "ai") {
+      if (typeof ack === "function") ack({ ok: false, error: "AI interview does not require admission" });
       return;
     }
     if (!entry.roomCode) {
@@ -1370,6 +1513,10 @@ io.on("connection", (socket) => {
     const found = await findScheduleEntryForStudent({ scheduleId, studentEmail });
     if (!found.ok) {
       if (typeof ack === "function") ack({ ok: false, error: found.error || "Schedule not found" });
+      return;
+    }
+    if (normalizeInterviewMode(found.entry?.interviewMode) !== "ai") {
+      if (typeof ack === "function") ack({ ok: false, error: "This slot is manual and must be handled by an interviewer" });
       return;
     }
     if (found.entry?.doneAt) {
@@ -1523,10 +1670,25 @@ io.on("connection", (socket) => {
       finishedAt: nowIso()
     };
     aiReportsByScheduleId.set(String(session.scheduleId), report);
+
+    const useDb = supabase ? await ensureScheduleDbAvailable() : false;
+    if (useDb) {
+      await supabase
+        .from(scheduleTable)
+        .update({ done_at: nowIso() })
+        .eq("id", session.scheduleId);
+    } else if (session.interviewerEmail) {
+      const list = scheduleByInterviewer.get(String(session.interviewerEmail || "").toLowerCase()) || [];
+      const idx = list.findIndex((e) => String(e.id) === String(session.scheduleId));
+      if (idx >= 0) list[idx] = { ...list[idx], doneAt: nowIso() };
+    }
+
     if (session.interviewerEmail) {
       io.to(`${dashboardRoomPrefix}${session.interviewerEmail}`).emit("ai-report", report);
+      emitDashboard(session.interviewerEmail).catch(() => {});
     }
     socket.emit("ai-report", report);
+    emitStudentStatus(session.studentEmail).catch(() => {});
     if (typeof ack === "function") ack({ ok: true, report });
   });
 

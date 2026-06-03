@@ -232,6 +232,10 @@
           <div id="tabSchedule" class="tabPanel">
             <form id="scheduleForm" class="row formRow">
               <input id="studentEmailInput" class="input" autocomplete="email" placeholder="Student email" />
+              <select id="scheduleModeInput" class="input" aria-label="Interview mode">
+                <option value="manual" selected>Manual</option>
+                <option value="ai">AI</option>
+              </select>
               <div class="fieldWithIcon">
                 <input id="scheduleTimeInput" class="input" type="datetime-local" />
                 <button id="scheduleTimeBtn" class="iconBtn" type="button" aria-label="Pick date and time">

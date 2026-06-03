@@ -37,6 +37,7 @@ const aiFeedbackEl = document.getElementById("aiFeedback");
 const interviewerDashboardEl = document.getElementById("interviewerDashboard");
 const scheduleForm = document.getElementById("scheduleForm");
 const studentEmailInput = document.getElementById("studentEmailInput");
+const scheduleModeInput = document.getElementById("scheduleModeInput");
 const scheduleTimeInput = document.getElementById("scheduleTimeInput");
 const scheduleTimeBtn = document.getElementById("scheduleTimeBtn");
 const scheduleList = document.getElementById("scheduleList");
@@ -739,6 +740,7 @@ function renderDashboard() {
       const isCompleted = status === "completed";
       const isInRoom = status === "in_room";
       const isAdmitted = status === "admitted";
+      const mode = String(entry.interviewMode || "manual").toLowerCase() === "ai" ? "ai" : "manual";
       const row = document.createElement("div");
       row.className = "dashItem";
 
@@ -754,9 +756,12 @@ function renderDashboard() {
 
       const secondary = document.createElement("div");
       secondary.className = "dashSecondary";
-      secondary.textContent = entry.roomCode
-        ? `Code ${entry.roomCode} · ${entry.online ? "online" : "offline"}`
-        : `Code will be created when you join · ${entry.online ? "online" : "offline"}`;
+      secondary.textContent =
+        mode === "ai"
+          ? `AI interview · ${entry.online ? "online" : "offline"}`
+          : entry.roomCode
+            ? `Code ${entry.roomCode} · ${entry.online ? "online" : "offline"}`
+            : `Code will be created when you join · ${entry.online ? "online" : "offline"}`;
 
       left.appendChild(primary);
       left.appendChild(secondary);
@@ -768,6 +773,11 @@ function renderDashboard() {
       statusPill.className = `pill ${statusPillClass(entry.status)}`;
       statusPill.textContent = String(entry.status || "scheduled").replace(/_/g, " ");
       actions.appendChild(statusPill);
+
+      const modePill = document.createElement("div");
+      modePill.className = `pill ${mode === "ai" ? "good" : ""}`.trim();
+      modePill.textContent = mode === "ai" ? "AI" : "Manual";
+      actions.appendChild(modePill);
 
       const aiReport = aiReports.get(String(entry.id));
       if (aiReport?.totalScore != null) {
@@ -794,6 +804,13 @@ function renderDashboard() {
           meetingInfo.textContent = report?.summary || "AI report loaded.";
         });
         actions.appendChild(reportBtn);
+      }
+
+      if (mode === "ai") {
+        row.appendChild(left);
+        row.appendChild(actions);
+        scheduleList.appendChild(row);
+        continue;
       }
 
       const admitBtn = document.createElement("button");
@@ -1162,7 +1179,9 @@ async function startAiInterview() {
   const status = lastStudentStatus;
   const schedule = Array.isArray(status?.schedule) ? status.schedule : [];
   const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
-  const next = sorted.find((e) => e && e.id != null && !e.doneAt) || null;
+  const next =
+    sorted.find((e) => e && e.id != null && !e.doneAt && String(e.interviewMode || "manual").toLowerCase() === "ai") ||
+    null;
   if (!next) return;
 
   try {
@@ -1291,20 +1310,29 @@ function renderStudentWaiting() {
   const schedule = Array.isArray(status.schedule) ? status.schedule : [];
   const admittedRooms = Array.isArray(status.admittedRooms) ? status.admittedRooms : [];
   const sorted = [...schedule].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
-  const next = sorted[0] || null;
-  syncAiInterviewCard(next);
+  const next = sorted.find((e) => e && e.id != null && !e.doneAt) || null;
+  const mode = next && String(next.interviewMode || "manual").toLowerCase() === "ai" ? "ai" : "manual";
+  syncAiInterviewCard(mode === "ai" ? next : null);
 
   if (next) {
     studentWaitingBody.textContent = `Your interview time: ${formatLocalTime(next.scheduledAt)}`;
     const interviewerLabel = next.interviewerName
       ? `${next.interviewerName} (${next.interviewerEmail})`
       : next.interviewerEmail;
-    studentWaitingMeta.textContent = next.roomCode
-      ? `Interviewer: ${interviewerLabel} · Code: ${next.roomCode}`
-      : `Interviewer: ${interviewerLabel} · Code will appear when interviewer joins`;
+    studentWaitingMeta.textContent =
+      mode === "ai"
+        ? `Interviewer: ${interviewerLabel} · Mode: AI`
+        : next.roomCode
+          ? `Interviewer: ${interviewerLabel} · Code: ${next.roomCode}`
+          : `Interviewer: ${interviewerLabel} · Code will appear when interviewer joins`;
   } else {
     studentWaitingBody.textContent = "Waiting for interviewer…";
     studentWaitingMeta.textContent = "No scheduled slot found for your email.";
+  }
+
+  if (mode === "ai") {
+    if (studentJoinForm) studentJoinForm.classList.add("hidden");
+    return;
   }
 
   const code = normalizeCode(admittedRooms[0]);
@@ -1740,6 +1768,7 @@ if (scheduleForm) {
     e.preventDefault();
     if (currentUser?.role !== "interviewer") return;
     const studentEmail = String(studentEmailInput.value || "").trim();
+    const interviewMode = String(scheduleModeInput?.value || "manual").trim().toLowerCase();
     const rawTime = String(scheduleTimeInput.value || "").trim();
     let scheduledAt = null;
     if (rawTime) {
@@ -1753,7 +1782,7 @@ if (scheduleForm) {
     }
     meetingInfo.classList.add("hidden");
     const res = await new Promise((resolve) => {
-      ensureSocket().emit("schedule-add", { studentEmail, scheduledAt }, (ack) => resolve(ack || { ok: false }));
+      ensureSocket().emit("schedule-add", { studentEmail, scheduledAt, interviewMode }, (ack) => resolve(ack || { ok: false }));
     });
     if (!res.ok) {
       meetingInfo.classList.remove("hidden");
@@ -1761,8 +1790,10 @@ if (scheduleForm) {
       return;
     }
     studentEmailInput.value = "";
+    if (scheduleModeInput) scheduleModeInput.value = "manual";
     meetingInfo.classList.remove("hidden");
-    meetingInfo.textContent = `Added slot for ${res.entry?.studentEmail || studentEmail}.`;
+    const modeLabel = String(res.entry?.interviewMode || interviewMode || "manual").toLowerCase() === "ai" ? "AI" : "Manual";
+    meetingInfo.textContent = `Added ${modeLabel} slot for ${res.entry?.studentEmail || studentEmail}.`;
   });
 }
 
