@@ -936,6 +936,20 @@ app.post("/api/ai/tts", requireAuth, requireSebForStudents, async (req, res) => 
   return res.send(result.audio);
 });
 
+app.post(
+  "/api/ai/stt",
+  requireAuth,
+  requireSebForStudents,
+  express.raw({ type: () => true, limit: "3mb" }),
+  async (req, res) => {
+    const mimeType = String(req.headers["content-type"] || "audio/webm");
+    const audioBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
+    const result = await deepgramTranscribe({ audioBuf, mimeType });
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error || "Transcription failed" });
+    return res.status(200).json({ ok: true, transcript: result.transcript });
+  }
+);
+
 function generateMeetingCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
@@ -1557,7 +1571,7 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack({ ok: true, sessionId, questions });
   });
 
-  socket.on("ai-answer", async ({ sessionId, questionId, text, audio, meta }, ack) => {
+  socket.on("ai-answer", async ({ sessionId, questionId, text, audio, transcript, mimeType, meta }, ack) => {
     if (socket.data.user?.role !== "student") {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
       return;
@@ -1594,28 +1608,29 @@ io.on("connection", (socket) => {
     const stablePercent = typeof meta?.stablePercent === "number" ? meta.stablePercent : 1;
     const poseWarnings = typeof meta?.poseWarnings === "number" ? meta.poseWarnings : 0;
     const typedText = String(text || "");
-    let transcript = "";
-    if (audioBuf) {
-      const stt = await deepgramTranscribe({ audioBuf, mimeType: "audio/webm" });
-      if (stt.ok) transcript = stt.transcript;
+    let spokenTranscript = String(transcript || "").trim();
+    if (!spokenTranscript && audioBuf) {
+      const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : "audio/webm";
+      const stt = await deepgramTranscribe({ audioBuf, mimeType: mt });
+      if (stt.ok) spokenTranscript = stt.transcript;
     }
 
     const rated = await rateAiAnswerWithOpenAI({
       question: bank.prompt,
-      transcript,
+      transcript: spokenTranscript,
       typedText,
       topic: bank.topic
     });
     const scored = rated.ok
       ? { score: rated.score, feedback: rated.feedback }
-      : scoreAiAnswer({ text: transcript || typedText, keywords: bank.keywords, stablePercent, poseWarnings });
+      : scoreAiAnswer({ text: spokenTranscript || typedText, keywords: bank.keywords, stablePercent, poseWarnings });
 
     const answer = {
       questionId: qid,
       topic: bank.topic,
       prompt: bank.prompt,
-      text: transcript || typedText,
-      transcript,
+      text: spokenTranscript || typedText,
+      transcript: spokenTranscript,
       typedText,
       audioBytes: audioBuf ? audioBuf.byteLength : 0,
       meta: {
@@ -1634,7 +1649,7 @@ io.on("connection", (socket) => {
         ok: true,
         score: scored.score,
         feedback: scored.feedback,
-        transcript,
+        transcript: spokenTranscript,
         strengths: rated.ok ? rated.strengths : [],
         improvements: rated.ok ? rated.improvements : [],
         usedGpt: rated.ok

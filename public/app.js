@@ -87,6 +87,8 @@ let aiMediaRecorder = null;
 let aiRecordingStartAt = 0;
 let aiAudioChunks = [];
 let aiLatestAudioBuffer = null;
+let aiLatestAudioMimeType = "audio/webm";
+let aiLatestTranscript = "";
 let aiPoseIntervalId = null;
 let aiPoseStableTotal = 0;
 let aiPoseSamples = 0;
@@ -961,6 +963,27 @@ async function fetchAiTtsUrl(text) {
   return URL.createObjectURL(blob);
 }
 
+async function transcribeAiAudioBlob(blob, mimeType) {
+  if (!blob || !blob.size) return null;
+  const headers = new Headers();
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+  if (mimeType) headers.set("Content-Type", mimeType);
+  const res = await fetch("/api/ai/stt", {
+    method: "POST",
+    headers,
+    body: blob
+  });
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (!res.ok || !body?.ok) return null;
+  const t = String(body.transcript || "").trim();
+  return t || null;
+}
+
 async function playAiVoice(text) {
   stopAiSpeech();
   const url = await fetchAiTtsUrl(text).catch(() => null);
@@ -1143,19 +1166,35 @@ async function startAiRecording() {
   else if (window.MediaRecorder?.isTypeSupported?.("audio/webm")) mimeType = "audio/webm";
   aiAudioChunks = [];
   aiLatestAudioBuffer = null;
+  aiLatestTranscript = "";
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   aiMediaRecorder.ondataavailable = (e) => {
     if (e.data && e.data.size) aiAudioChunks.push(e.data);
   };
   aiMediaRecorder.onstop = async () => {
-    const blob = new Blob(aiAudioChunks, { type: aiMediaRecorder?.mimeType || "audio/webm" });
+    const mt = aiMediaRecorder?.mimeType || "audio/webm";
+    aiLatestAudioMimeType = mt;
+    const blob = new Blob(aiAudioChunks, { type: mt });
     try {
       aiLatestAudioBuffer = await blob.arrayBuffer();
       if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded ${formatAiTimer(Date.now() - aiRecordingStartAt)}`;
     } catch {
       aiLatestAudioBuffer = null;
       if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
+    }
+    const transcript = await transcribeAiAudioBlob(blob, mt).catch(() => null);
+    aiLatestTranscript = transcript || "";
+    if (transcript) {
+      if (aiTranscriptEl) {
+        aiTranscriptEl.textContent = `Transcript: ${transcript}`;
+        aiTranscriptEl.classList.remove("hidden");
+      }
+      if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
+      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded · Transcript ready`;
+    } else if (aiTranscriptEl) {
+      aiTranscriptEl.textContent = "Transcript: (unavailable)";
+      aiTranscriptEl.classList.remove("hidden");
     }
     aiRecordBtn.disabled = false;
     aiStopBtn.disabled = true;
@@ -1232,6 +1271,8 @@ async function submitAiAnswer({ finish, auto }) {
     questionId: q.id,
     text: String(aiAnswerInput?.value || "").trim(),
     audio: aiLatestAudioBuffer || null,
+    transcript: aiLatestTranscript || "",
+    mimeType: aiLatestAudioMimeType || "audio/webm",
     meta: {
       durationMs: Math.max(0, Date.now() - aiQuestionStartedAt),
       stablePercent,
@@ -1253,6 +1294,9 @@ async function submitAiAnswer({ finish, auto }) {
     const t = String(res.transcript || "").trim();
     aiTranscriptEl.textContent = t ? `Transcript: ${t}` : "Transcript: (unavailable)";
     aiTranscriptEl.classList.remove("hidden");
+  }
+  if (res.transcript && aiAnswerInput && !String(aiAnswerInput.value || "").trim()) {
+    aiAnswerInput.value = String(res.transcript || "").trim();
   }
   if (aiFeedbackEl) {
     aiFeedbackEl.classList.remove("hidden");
