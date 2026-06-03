@@ -89,6 +89,10 @@ let aiAudioChunks = [];
 let aiLatestAudioBuffer = null;
 let aiLatestAudioMimeType = "audio/webm";
 let aiLatestTranscript = "";
+let aiLiveFinalTranscript = "";
+let aiLiveInterimTranscript = "";
+let aiStopPromise = null;
+let aiStopPromiseResolve = null;
 let aiPoseIntervalId = null;
 let aiPoseStableTotal = 0;
 let aiPoseSamples = 0;
@@ -556,6 +560,29 @@ function ensureSocket() {
         aiFeedbackEl.classList.remove("hidden");
         aiFeedbackEl.textContent = payload?.summary || "AI interview completed.";
       }
+    }
+  });
+
+  socket.on("ai-stt", (payload) => {
+    if (currentUser?.role !== "student") return;
+    const finalText = typeof payload?.final === "string" ? payload.final : "";
+    const interimText = typeof payload?.interim === "string" ? payload.interim : "";
+    const combined = typeof payload?.text === "string" ? payload.text : "";
+    aiLiveFinalTranscript = finalText;
+    aiLiveInterimTranscript = interimText;
+    if (aiTranscriptEl) {
+      aiTranscriptEl.textContent = combined ? `Transcript: ${combined}` : "Transcript: ...";
+      aiTranscriptEl.classList.remove("hidden");
+    }
+    if (aiRecorderMeta && aiMediaRecorder?.state === "recording") {
+      aiRecorderMeta.textContent = "Audio: recording · Transcribing...";
+    }
+  });
+
+  socket.on("ai-stt-error", (payload) => {
+    if (currentUser?.role !== "student") return;
+    if (aiRecorderMeta && aiMediaRecorder?.state === "recording") {
+      aiRecorderMeta.textContent = String(payload?.error || "Live transcription error");
     }
   });
 
@@ -1167,10 +1194,38 @@ async function startAiRecording() {
   aiAudioChunks = [];
   aiLatestAudioBuffer = null;
   aiLatestTranscript = "";
+  aiLiveFinalTranscript = "";
+  aiLiveInterimTranscript = "";
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+  let liveOk = false;
+  try {
+    const ack = await new Promise((resolve) => {
+      ensureSocket().emit("ai-stt-start", { mimeType: aiMediaRecorder?.mimeType || mimeType || "audio/webm" }, (res) => resolve(res || { ok: false }));
+    });
+    liveOk = Boolean(ack?.ok);
+  } catch {
+    liveOk = false;
+  }
+
+  aiStopPromise = new Promise((resolve) => {
+    aiStopPromiseResolve = resolve;
+  });
+
   aiMediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size) aiAudioChunks.push(e.data);
+    if (e.data && e.data.size) {
+      aiAudioChunks.push(e.data);
+      if (liveOk) {
+        e.data
+          .arrayBuffer()
+          .then((buf) => {
+            if (!buf) return;
+            ensureSocket().emit("ai-stt-chunk", { audio: buf });
+          })
+          .catch(() => {});
+      }
+    }
   };
   aiMediaRecorder.onstop = async () => {
     const mt = aiMediaRecorder?.mimeType || "audio/webm";
@@ -1183,7 +1238,21 @@ async function startAiRecording() {
       aiLatestAudioBuffer = null;
       if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
     }
-    const transcript = await transcribeAiAudioBlob(blob, mt).catch(() => null);
+    let transcript = "";
+    if (liveOk) {
+      try {
+        const stopped = await new Promise((resolve) => {
+          ensureSocket().emit("ai-stt-stop", {}, (res) => resolve(res || { ok: false }));
+        });
+        transcript = typeof stopped?.transcript === "string" ? stopped.transcript.trim() : "";
+      } catch {
+        transcript = "";
+      }
+      if (!transcript) {
+        transcript = String(`${aiLiveFinalTranscript}${aiLiveFinalTranscript && aiLiveInterimTranscript ? " " : ""}${aiLiveInterimTranscript}`).trim();
+      }
+    }
+    if (!transcript) transcript = (await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "";
     aiLatestTranscript = transcript || "";
     if (transcript) {
       if (aiTranscriptEl) {
@@ -1198,19 +1267,29 @@ async function startAiRecording() {
     }
     aiRecordBtn.disabled = false;
     aiStopBtn.disabled = true;
+    if (aiStopPromiseResolve) aiStopPromiseResolve();
+    aiStopPromise = null;
+    aiStopPromiseResolve = null;
   };
   aiMediaRecorder.start(250);
   aiRecordBtn.disabled = true;
   aiStopBtn.disabled = false;
-  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
+  if (aiRecorderMeta) aiRecorderMeta.textContent = liveOk ? "Audio: recording · Transcribing..." : "Audio: recording...";
 }
 
 async function stopAiRecording() {
   if (!aiMediaRecorder) return;
   if (aiMediaRecorder.state !== "recording") return;
+  const waitForStop = aiStopPromise;
   try {
     aiMediaRecorder.stop();
   } catch {
+  }
+  if (waitForStop) {
+    try {
+      await Promise.race([waitForStop, new Promise((r) => setTimeout(r, 2500))]);
+    } catch {
+    }
   }
 }
 

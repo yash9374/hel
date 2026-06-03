@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { Server as SocketIOServer } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -188,6 +189,128 @@ async function deepgramTranscribe({ audioBuf, mimeType }) {
   const text = typeof transcript === "string" ? transcript.trim() : "";
   if (!text) return { ok: false, error: "Empty transcript" };
   return { ok: true, transcript: text, raw: data };
+}
+
+function normalizeDeepgramMimeType(mimeType) {
+  const mt = String(mimeType || "").trim().toLowerCase();
+  if (!mt) return "audio/webm";
+  if (mt.includes("audio/webm")) return "audio/webm";
+  if (mt.includes("audio/wav")) return "audio/wav";
+  if (mt.includes("audio/mpeg")) return "audio/mpeg";
+  if (mt.includes("audio/mp3")) return "audio/mpeg";
+  if (mt.includes("audio/ogg")) return "audio/ogg";
+  return mt;
+}
+
+function getDeepgramLiveState(socket) {
+  const st = socket?.data?.deepgramLive;
+  if (!st || typeof st !== "object") return null;
+  if (!st.ws) return null;
+  return st;
+}
+
+function closeDeepgramLive(socket, { sendCloseStream } = { sendCloseStream: false }) {
+  const st = getDeepgramLiveState(socket);
+  if (!st) return "";
+  const ws = st.ws;
+  const transcript = String(`${st.finalTranscript || ""}${st.finalTranscript && st.interimTranscript ? " " : ""}${st.interimTranscript || ""}`).trim();
+  try {
+    if (sendCloseStream && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "CloseStream" }));
+  } catch {
+  }
+  try {
+    ws?.removeAllListeners?.();
+  } catch {
+  }
+  try {
+    ws?.close?.();
+  } catch {
+    try {
+      ws?.terminate?.();
+    } catch {
+    }
+  }
+  socket.data.deepgramLive = null;
+  return transcript;
+}
+
+function emitDeepgramLive(socket, st, payload) {
+  const now = Date.now();
+  if (now - (st.lastEmitAt || 0) < 75) return;
+  st.lastEmitAt = now;
+  socket.emit("ai-stt", payload);
+}
+
+function openDeepgramLive(socket, { mimeType }) {
+  if (!deepgramApiKey) return { ok: false, error: "Deepgram not configured" };
+  closeDeepgramLive(socket);
+  const url = new URL("wss://api.deepgram.com/v1/listen");
+  url.searchParams.set("model", "nova-2");
+  url.searchParams.set("smart_format", "true");
+  url.searchParams.set("punctuate", "true");
+  url.searchParams.set("interim_results", "true");
+  url.searchParams.set("vad_events", "true");
+  url.searchParams.set("endpointing", "90");
+  url.searchParams.set("utterance_end_ms", "900");
+
+  const contentType = normalizeDeepgramMimeType(mimeType);
+  const ws = new WebSocket(url.toString(), {
+    headers: {
+      Authorization: `Token ${deepgramApiKey}`,
+      "Content-Type": contentType
+    }
+  });
+
+  const st = {
+    ws,
+    mimeType: contentType,
+    finalTranscript: "",
+    interimTranscript: "",
+    lastEmitAt: 0
+  };
+  socket.data.deepgramLive = st;
+
+  ws.on("open", () => {
+    emitDeepgramLive(socket, st, { ok: true, final: st.finalTranscript, interim: st.interimTranscript, text: "" });
+  });
+
+  ws.on("message", (raw) => {
+    const text = raw instanceof Buffer ? raw.toString("utf8") : String(raw || "");
+    const data = safeJsonParse(text);
+    if (!data) return;
+    const transcript = data?.channel?.alternatives?.[0]?.transcript;
+    const next = typeof transcript === "string" ? transcript.trim() : "";
+    if (!next) return;
+
+    const isFinal = Boolean(data?.is_final);
+    const speechFinal = Boolean(data?.speech_final);
+    if (isFinal) {
+      st.finalTranscript = String(`${st.finalTranscript || ""}${st.finalTranscript ? " " : ""}${next}`).trim();
+      st.interimTranscript = "";
+    } else {
+      st.interimTranscript = next;
+    }
+    const combined = String(`${st.finalTranscript || ""}${st.finalTranscript && st.interimTranscript ? " " : ""}${st.interimTranscript || ""}`).trim();
+    emitDeepgramLive(socket, st, {
+      ok: true,
+      final: st.finalTranscript,
+      interim: st.interimTranscript,
+      text: combined,
+      isFinal,
+      speechFinal
+    });
+  });
+
+  ws.on("close", () => {
+    const combined = String(`${st.finalTranscript || ""}${st.finalTranscript && st.interimTranscript ? " " : ""}${st.interimTranscript || ""}`).trim();
+    socket.emit("ai-stt", { ok: true, final: st.finalTranscript, interim: st.interimTranscript, text: combined, closed: true });
+  });
+
+  ws.on("error", () => {
+    socket.emit("ai-stt-error", { ok: false, error: "Live transcription error" });
+  });
+
+  return { ok: true };
 }
 
 async function rateAiAnswerWithOpenAI({ question, transcript, typedText, topic }) {
@@ -1531,6 +1654,55 @@ io.on("connection", (socket) => {
     if (typeof ack === "function") ack({ ok: true });
   });
 
+  socket.on("ai-stt-start", ({ mimeType }, ack) => {
+    if (socket.data.user?.role !== "student") {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const opened = openDeepgramLive(socket, { mimeType });
+    if (typeof ack === "function") ack(opened);
+  });
+
+  socket.on("ai-stt-chunk", ({ audio }, ack) => {
+    const st = getDeepgramLiveState(socket);
+    if (!st?.ws || st.ws.readyState !== WebSocket.OPEN) {
+      if (typeof ack === "function") ack({ ok: false, error: "Live transcription not started" });
+      return;
+    }
+    let audioBuf = null;
+    try {
+      if (audio && (audio instanceof ArrayBuffer || ArrayBuffer.isView(audio))) {
+        const arr = audio instanceof ArrayBuffer ? new Uint8Array(audio) : new Uint8Array(audio.buffer);
+        if (arr.byteLength > 0 && arr.byteLength <= 250_000) audioBuf = Buffer.from(arr);
+      }
+    } catch {
+      audioBuf = null;
+    }
+    if (!audioBuf) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid audio" });
+      return;
+    }
+    try {
+      st.ws.send(audioBuf);
+      if (typeof ack === "function") ack({ ok: true });
+    } catch {
+      if (typeof ack === "function") ack({ ok: false, error: "Failed to send audio" });
+    }
+  });
+
+  socket.on("ai-stt-stop", async (_payload, ack) => {
+    const st = getDeepgramLiveState(socket);
+    if (st?.ws && st.ws.readyState === WebSocket.OPEN) {
+      try {
+        st.ws.send(JSON.stringify({ type: "CloseStream" }));
+      } catch {
+      }
+      await new Promise((r) => setTimeout(r, 650));
+    }
+    const transcript = closeDeepgramLive(socket);
+    if (typeof ack === "function") ack({ ok: true, transcript });
+  });
+
   socket.on("ai-start", async ({ scheduleId }, ack) => {
     if (socket.data.user?.role !== "student") {
       if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
@@ -1740,6 +1912,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    closeDeepgramLive(socket);
     leave();
     if (userRole === "student" && userEmail) {
       const set = studentSocketIdsByEmail.get(userEmail);
