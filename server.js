@@ -174,12 +174,16 @@ async function deepgramTranscribe({ audioBuf, mimeType }) {
   url.searchParams.set("model", "nova-2");
   url.searchParams.set("smart_format", "true");
   url.searchParams.set("punctuate", "true");
+  url.searchParams.set("numerals", "true");
+  url.searchParams.set("paragraphs", "true");
+  url.searchParams.set("detect_language", "true");
   url.searchParams.set("utterances", "false");
+  const mt = String(mimeType || "audio/webm").split(";")[0].trim() || "audio/webm";
   const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Token ${deepgramApiKey}`,
-      "Content-Type": mimeType || "audio/webm"
+      "Content-Type": mt
     },
     body: audioBuf
   });
