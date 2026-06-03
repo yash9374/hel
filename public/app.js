@@ -25,6 +25,7 @@ const aiConsentBtn = document.getElementById("aiConsentBtn");
 const aiProgressEl = document.getElementById("aiProgress");
 const aiTimerEl = document.getElementById("aiTimer");
 const aiQuestionEl = document.getElementById("aiQuestion");
+const aiTranscriptEl = document.getElementById("aiTranscript");
 const aiAnswerInput = document.getElementById("aiAnswerInput");
 const aiRecordBtn = document.getElementById("aiRecordBtn");
 const aiStopBtn = document.getElementById("aiStopBtn");
@@ -78,7 +79,9 @@ let aiSessionId = null;
 let aiQuestions = [];
 let aiQuestionIndex = 0;
 let aiQuestionStartedAt = 0;
+let aiQuestionDeadlineAt = 0;
 let aiTimerIntervalId = null;
+let aiAutoSubmitTimeoutId = null;
 let aiMediaRecorder = null;
 let aiRecordingStartAt = 0;
 let aiAudioChunks = [];
@@ -88,6 +91,9 @@ let aiPoseStableTotal = 0;
 let aiPoseSamples = 0;
 let aiPoseUnsteadyStreak = 0;
 let aiPoseWarnings = 0;
+let aiSpeakAudio = null;
+let aiSpeakUrl = null;
+let aiSubmitting = false;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -905,6 +911,61 @@ function stopAiPoseMonitor() {
   aiPoseIntervalId = null;
 }
 
+function stopAiSpeech() {
+  if (aiSpeakAudio) {
+    try {
+      aiSpeakAudio.pause();
+    } catch {
+    }
+  }
+  aiSpeakAudio = null;
+  if (aiSpeakUrl) {
+    try {
+      URL.revokeObjectURL(aiSpeakUrl);
+    } catch {
+    }
+  }
+  aiSpeakUrl = null;
+}
+
+async function fetchAiTtsUrl(text) {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json");
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+  const res = await fetch("/api/ai/tts", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text: String(text || "") })
+  });
+  if (!res.ok) return null;
+  const blob = await res.blob().catch(() => null);
+  if (!blob || !blob.size) return null;
+  return URL.createObjectURL(blob);
+}
+
+async function playAiVoice(text) {
+  stopAiSpeech();
+  const url = await fetchAiTtsUrl(text).catch(() => null);
+  if (!url) return false;
+  aiSpeakUrl = url;
+  const audio = new Audio(url);
+  audio.preload = "auto";
+  aiSpeakAudio = audio;
+  const done = new Promise((resolve) => {
+    audio.onended = () => resolve(true);
+    audio.onerror = () => resolve(false);
+  });
+  try {
+    await audio.play();
+  } catch {
+    stopAiSpeech();
+    return false;
+  }
+  const ok = await done;
+  stopAiSpeech();
+  return ok;
+}
+
 function startAiPoseMonitor() {
   stopAiPoseMonitor();
   resetAiPoseStats();
@@ -957,14 +1018,23 @@ function startAiPoseMonitor() {
 function stopAiTimer() {
   if (aiTimerIntervalId) clearInterval(aiTimerIntervalId);
   aiTimerIntervalId = null;
+  if (aiAutoSubmitTimeoutId) clearTimeout(aiAutoSubmitTimeoutId);
+  aiAutoSubmitTimeoutId = null;
 }
 
 function startAiTimer() {
   stopAiTimer();
   if (!aiTimerEl) return;
-  aiTimerEl.textContent = "00:00";
+  const remaining = Math.max(0, aiQuestionDeadlineAt - Date.now());
+  aiTimerEl.textContent = formatAiTimer(remaining);
   aiTimerIntervalId = setInterval(() => {
-    aiTimerEl.textContent = formatAiTimer(Date.now() - aiQuestionStartedAt);
+    const left = Math.max(0, aiQuestionDeadlineAt - Date.now());
+    aiTimerEl.textContent = formatAiTimer(left);
+    if (left <= 0) {
+      stopAiTimer();
+      const isLast = aiQuestionIndex + 1 >= aiQuestions.length;
+      submitAiAnswer({ finish: isLast, auto: true }).catch(() => {});
+    }
   }, 250);
 }
 
@@ -975,7 +1045,9 @@ function setAiMode(active) {
   if (!active) {
     stopAiPoseMonitor();
     stopAiTimer();
+    stopAiSpeech();
     if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
+    if (aiTranscriptEl) aiTranscriptEl.classList.add("hidden");
   }
 }
 
@@ -990,19 +1062,51 @@ function syncAiInterviewCard(nextSchedule) {
   if (!aiSessionId) aiActiveScheduleId = String(sched.id);
 }
 
-function renderAiQuestion() {
+async function beginAiAnswerWindow(seconds) {
+  const durationMs = Math.max(0, Number(seconds || 0) * 1000);
+  aiQuestionStartedAt = Date.now();
+  aiQuestionDeadlineAt = aiQuestionStartedAt + durationMs;
+  startAiTimer();
+  startAiPoseMonitor();
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
+  await startAiRecording();
+  if (durationMs > 0) {
+    aiAutoSubmitTimeoutId = setTimeout(() => {
+      const isLast = aiQuestionIndex + 1 >= aiQuestions.length;
+      submitAiAnswer({ finish: isLast, auto: true }).catch(() => {});
+    }, durationMs + 50);
+  }
+}
+
+async function renderAiQuestion() {
   const q = aiQuestions[aiQuestionIndex] || null;
   if (!q) return;
   if (aiProgressEl) aiProgressEl.textContent = `Question ${aiQuestionIndex + 1} of ${aiQuestions.length}`;
   if (aiQuestionEl) aiQuestionEl.textContent = q.prompt || "Question";
   if (aiAnswerInput) aiAnswerInput.value = "";
+  if (aiTranscriptEl) {
+    aiTranscriptEl.classList.add("hidden");
+    aiTranscriptEl.textContent = "";
+  }
   aiLatestAudioBuffer = null;
   aiAudioChunks = [];
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
   if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
-  aiQuestionStartedAt = Date.now();
-  startAiTimer();
-  startAiPoseMonitor();
+  stopAiTimer();
+  stopAiSpeech();
+  if (aiTimerEl) aiTimerEl.textContent = formatAiTimer(Math.max(0, Number(q.seconds || 0) * 1000));
+  if (aiRecordBtn) aiRecordBtn.disabled = true;
+  if (aiStopBtn) aiStopBtn.disabled = true;
+  if (aiNextBtn) aiNextBtn.disabled = true;
+  if (aiFinishBtn) aiFinishBtn.disabled = true;
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Voice: asking question...";
+  const voiced = await playAiVoice(q.prompt || "");
+  if (aiRecorderMeta) aiRecorderMeta.textContent = voiced ? "Voice: done. Recording starts now." : "Voice: unavailable. Recording starts now.";
+  if (aiRecordBtn) aiRecordBtn.disabled = false;
+  if (aiStopBtn) aiStopBtn.disabled = true;
+  await beginAiAnswerWindow(q.seconds || 120);
+  if (aiNextBtn) aiNextBtn.disabled = false;
+  if (aiFinishBtn) aiFinishBtn.disabled = false;
 }
 
 async function startAiRecording() {
@@ -1086,7 +1190,7 @@ async function startAiInterview() {
     aiSessionId = String(res.sessionId || "");
     aiQuestions = Array.isArray(res.questions) ? res.questions : [];
     aiQuestionIndex = 0;
-    renderAiQuestion();
+    await renderAiQuestion();
   } catch {
     setAiMode(false);
     meetingInfo.classList.remove("hidden");
@@ -1094,10 +1198,13 @@ async function startAiInterview() {
   }
 }
 
-async function submitAiAnswer({ finish }) {
+async function submitAiAnswer({ finish, auto }) {
   if (!aiSessionId) return;
+  if (aiSubmitting) return;
   const q = aiQuestions[aiQuestionIndex] || null;
   if (!q) return;
+  aiSubmitting = true;
+  stopAiTimer();
   if (aiStopBtn && !aiStopBtn.disabled) await stopAiRecording();
   const { stablePercent, warnings } = getAiPoseMetrics();
   const payload = {
@@ -1119,11 +1226,25 @@ async function submitAiAnswer({ finish }) {
       aiFeedbackEl.classList.remove("hidden");
       aiFeedbackEl.textContent = res.error || "Failed to submit answer";
     }
+    aiSubmitting = false;
     return;
+  }
+  if (aiTranscriptEl) {
+    const t = String(res.transcript || "").trim();
+    aiTranscriptEl.textContent = t ? `Transcript: ${t}` : "Transcript: (unavailable)";
+    aiTranscriptEl.classList.remove("hidden");
   }
   if (aiFeedbackEl) {
     aiFeedbackEl.classList.remove("hidden");
-    aiFeedbackEl.textContent = res.feedback || `Saved. Score: ${res.score ?? 0}/20`;
+    const parts = [];
+    if (typeof res.score === "number") parts.push(`Score: ${res.score}/20`);
+    if (res.usedGpt) parts.push("Rated by GPT-4o-mini");
+    if (res.feedback) parts.push(String(res.feedback));
+    const strengths = Array.isArray(res.strengths) ? res.strengths.map((s) => String(s || "").trim()).filter(Boolean) : [];
+    const improvements = Array.isArray(res.improvements) ? res.improvements.map((s) => String(s || "").trim()).filter(Boolean) : [];
+    if (strengths.length) parts.push(`Strengths: ${strengths.join(" · ")}`);
+    if (improvements.length) parts.push(`Improve: ${improvements.join(" · ")}`);
+    aiFeedbackEl.textContent = parts.filter(Boolean).join(" · ") || `Saved. Score: ${res.score ?? 0}/20`;
   }
 
   const nextIndex = aiQuestionIndex + 1;
@@ -1147,11 +1268,13 @@ async function submitAiAnswer({ finish }) {
     stopAiTimer();
     if (aiNextBtn) aiNextBtn.disabled = true;
     if (aiFinishBtn) aiFinishBtn.disabled = true;
+    aiSubmitting = false;
     return;
   }
 
   aiQuestionIndex = nextIndex;
-  renderAiQuestion();
+  aiSubmitting = false;
+  await renderAiQuestion();
 }
 
 function renderStudentWaiting() {

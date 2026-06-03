@@ -888,6 +888,17 @@ body {
   color: var(--text);
 }
 
+.aiTranscript {
+  padding: 12px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 .aiResponseGrid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 240px;

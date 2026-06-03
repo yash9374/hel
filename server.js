@@ -31,6 +31,8 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const sessionSecret = process.env.SESSION_SECRET;
 const sebBrowserExamKey = process.env.SEB_BROWSER_EXAM_KEY;
 const sebConfigKey = process.env.SEB_CONFIG_KEY;
+const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
+const openaiApiKey = process.env.OPENAI_API_KEY;
 
 const hasSupabase = Boolean(supabaseUrl && supabaseServiceKey);
 const supabase = hasSupabase ? createClient(supabaseUrl, supabaseServiceKey) : null;
@@ -114,6 +116,144 @@ function scoreAiAnswer({ text, keywords, stablePercent, poseWarnings }) {
     ? `Keywords: ${hits}/${total} · Posture warnings: ${clampScore(Number(poseWarnings || 0), 0, 10)}`
     : `Posture warnings: ${clampScore(Number(poseWarnings || 0), 0, 10)}`;
   return { score, feedback, hits, total, posturePenalty };
+}
+
+function readResponseText(payload) {
+  const out = payload?.output;
+  if (Array.isArray(out) && out.length) {
+    for (const item of out) {
+      const parts = item?.content;
+      if (!Array.isArray(parts)) continue;
+      for (const part of parts) {
+        const t = part?.text;
+        if (typeof t === "string" && t.trim()) return t;
+      }
+    }
+  }
+  const alt = payload?.output_text;
+  if (typeof alt === "string" && alt.trim()) return alt;
+  return "";
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function deepgramSpeak(text) {
+  if (!deepgramApiKey) return { ok: false, error: "Deepgram not configured" };
+  const input = String(text || "").trim();
+  if (!input) return { ok: false, error: "Text required" };
+  if (input.length > 1200) return { ok: false, error: "Text too long" };
+  const url = new URL("https://api.deepgram.com/v1/speak");
+  url.searchParams.set("model", "aura-asteria-en");
+  url.searchParams.set("encoding", "mp3");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${deepgramApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ text: input })
+  });
+  if (!res.ok) return { ok: false, error: "Deepgram TTS failed" };
+  const arr = await res.arrayBuffer();
+  const buf = Buffer.from(arr);
+  if (!buf.byteLength) return { ok: false, error: "Empty audio" };
+  return { ok: true, audio: buf };
+}
+
+async function deepgramTranscribe({ audioBuf, mimeType }) {
+  if (!deepgramApiKey) return { ok: false, error: "Deepgram not configured" };
+  if (!audioBuf || !audioBuf.byteLength) return { ok: false, error: "Audio required" };
+  const url = new URL("https://api.deepgram.com/v1/listen");
+  url.searchParams.set("model", "nova-2");
+  url.searchParams.set("smart_format", "true");
+  url.searchParams.set("punctuate", "true");
+  url.searchParams.set("utterances", "false");
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${deepgramApiKey}`,
+      "Content-Type": mimeType || "audio/webm"
+    },
+    body: audioBuf
+  });
+  if (!res.ok) return { ok: false, error: "Deepgram transcription failed" };
+  const data = await res.json().catch(() => null);
+  const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
+  const text = typeof transcript === "string" ? transcript.trim() : "";
+  if (!text) return { ok: false, error: "Empty transcript" };
+  return { ok: true, transcript: text, raw: data };
+}
+
+async function rateAiAnswerWithOpenAI({ question, transcript, typedText, topic }) {
+  if (!openaiApiKey) return { ok: false, error: "OpenAI not configured" };
+  const q = String(question || "").trim();
+  const said = String(transcript || "").trim();
+  const typed = String(typedText || "").trim();
+  if (!q) return { ok: false, error: "Question required" };
+  if (!said && !typed) return { ok: false, error: "Answer required" };
+
+  const schema = {
+    name: "ai_interview_rating",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        score_0_20: { type: "integer", minimum: 0, maximum: 20 },
+        feedback: { type: "string" },
+        strengths: { type: "array", items: { type: "string" }, maxItems: 4 },
+        improvements: { type: "array", items: { type: "string" }, maxItems: 4 }
+      },
+      required: ["score_0_20", "feedback", "strengths", "improvements"]
+    }
+  };
+
+  const input = [
+    {
+      role: "system",
+      content:
+        "You are a strict technical interview evaluator. Score answers based on correctness, completeness, clarity, and practical trade-offs. Do not mention policies. Keep feedback concise and actionable."
+    },
+    {
+      role: "user",
+      content: [
+        `Topic: ${String(topic || "General")}`,
+        `Question: ${q}`,
+        `Spoken transcript: ${said || "(none)"}`,
+        `Typed notes (optional): ${typed || "(none)"}`
+      ].join("\n")
+    }
+  ];
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openaiApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      input,
+      response_format: { type: "json_schema", json_schema: schema }
+    })
+  });
+  if (!res.ok) return { ok: false, error: "OpenAI rating failed" };
+  const payload = await res.json().catch(() => null);
+  const text = readResponseText(payload);
+  const parsed = safeJsonParse(text);
+  if (!parsed || typeof parsed.score_0_20 !== "number") return { ok: false, error: "OpenAI rating malformed" };
+  return {
+    ok: true,
+    score: clampScore(Math.round(parsed.score_0_20), 0, 20),
+    feedback: String(parsed.feedback || "").trim(),
+    strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map((s) => String(s || "").trim()).filter(Boolean) : [],
+    improvements: Array.isArray(parsed.improvements) ? parsed.improvements.map((s) => String(s || "").trim()).filter(Boolean) : []
+  };
 }
 
 function nowIso() {
@@ -701,6 +841,16 @@ app.post("/api/seb-check", requireAuth, requireSebForStudents, (req, res) => {
   res.status(200).json({ ok: true });
 });
 
+app.post("/api/ai/tts", requireAuth, requireSebForStudents, async (req, res) => {
+  const text = String(req.body?.text || "");
+  const result = await deepgramSpeak(text);
+  if (!result.ok) return res.status(400).json({ ok: false, error: result.error || "TTS failed" });
+  res.status(200);
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("Cache-Control", "no-store");
+  return res.send(result.audio);
+});
+
 function generateMeetingCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
@@ -1283,12 +1433,30 @@ io.on("connection", (socket) => {
 
     const stablePercent = typeof meta?.stablePercent === "number" ? meta.stablePercent : 1;
     const poseWarnings = typeof meta?.poseWarnings === "number" ? meta.poseWarnings : 0;
-    const scored = scoreAiAnswer({ text, keywords: bank.keywords, stablePercent, poseWarnings });
+    const typedText = String(text || "");
+    let transcript = "";
+    if (audioBuf) {
+      const stt = await deepgramTranscribe({ audioBuf, mimeType: "audio/webm" });
+      if (stt.ok) transcript = stt.transcript;
+    }
+
+    const rated = await rateAiAnswerWithOpenAI({
+      question: bank.prompt,
+      transcript,
+      typedText,
+      topic: bank.topic
+    });
+    const scored = rated.ok
+      ? { score: rated.score, feedback: rated.feedback }
+      : scoreAiAnswer({ text: transcript || typedText, keywords: bank.keywords, stablePercent, poseWarnings });
+
     const answer = {
       questionId: qid,
       topic: bank.topic,
       prompt: bank.prompt,
-      text: String(text || ""),
+      text: transcript || typedText,
+      transcript,
+      typedText,
       audioBytes: audioBuf ? audioBuf.byteLength : 0,
       meta: {
         durationMs: typeof meta?.durationMs === "number" ? meta.durationMs : null,
@@ -1301,7 +1469,17 @@ io.on("connection", (socket) => {
     };
 
     session.answers.push(answer);
-    if (typeof ack === "function") ack({ ok: true, score: scored.score, feedback: scored.feedback });
+    if (typeof ack === "function") {
+      ack({
+        ok: true,
+        score: scored.score,
+        feedback: scored.feedback,
+        transcript,
+        strengths: rated.ok ? rated.strengths : [],
+        improvements: rated.ok ? rated.improvements : [],
+        usedGpt: rated.ok
+      });
+    }
   });
 
   socket.on("ai-finish", async ({ sessionId }, ack) => {
