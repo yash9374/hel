@@ -95,6 +95,7 @@ let aiPoseWarnings = 0;
 let aiSpeakAudio = null;
 let aiSpeakUrl = null;
 let aiSubmitting = false;
+let aiAutoStartAttemptedForScheduleId = null;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -1332,6 +1333,14 @@ function renderStudentWaiting() {
 
   if (mode === "ai") {
     if (studentJoinForm) studentJoinForm.classList.add("hidden");
+    const schedId = next?.id != null ? String(next.id) : null;
+    const scheduledTs = next?.scheduledAt ? new Date(next.scheduledAt).getTime() : NaN;
+    const now = Date.now();
+    const withinStartWindow = !Number.isNaN(scheduledTs) ? now >= scheduledTs && now <= scheduledTs + 10 * 60 * 1000 : true;
+    if (schedId && withinStartWindow && !aiSessionId && aiAutoStartAttemptedForScheduleId !== schedId) {
+      aiAutoStartAttemptedForScheduleId = schedId;
+      startAiInterview().catch(() => {});
+    }
     return;
   }
 

@@ -542,9 +542,22 @@ async function emitStudentStatus(studentEmail) {
     }
   }
 
+  const now = Date.now();
+  const missedGraceMs = 10 * 60 * 1000;
+  scheduleEntries = (scheduleEntries || [])
+    .filter((entry) => {
+      if (entry?.doneAt) return false;
+      const ts = entry?.scheduledAt ? new Date(entry.scheduledAt).getTime() : NaN;
+      if (Number.isNaN(ts)) return true;
+      if (now > ts + missedGraceMs) return false;
+      return true;
+    })
+    .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+
   const admittedRooms = [];
   for (const entry of scheduleEntries) {
     if (!entry.roomCode) continue;
+    if (normalizeInterviewMode(entry.interviewMode) === "ai") continue;
     if (entry.admittedAt || isStudentAdmitted(entry.roomCode, email)) admittedRooms.push(entry.roomCode);
   }
   const socketIds = studentSocketIdsByEmail.get(email);
