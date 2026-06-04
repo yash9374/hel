@@ -1233,6 +1233,134 @@ video {
   z-index: 5;
 }
 
+.aiHud {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  z-index: 4;
+  backdrop-filter: blur(10px);
+}
+
+.aiHudIcons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.aiHudIcon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aiHudIcon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.aiHudStatus {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #e2e8f0;
+}
+
+.aiMeetingBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aiMeetingStatus {
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #dbeafe;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  background: rgba(37, 99, 235, 0.18);
+}
+
+body.aiInterview #remoteVideos {
+  display: none;
+}
+
+body.aiInterview .codePill,
+body.aiInterview .meetingBarRight {
+  display: none;
+}
+
+body.aiInterview #aiMeetingBar {
+  display: inline-flex;
+}
+
+body.aiInterview .meetingStage {
+  align-items: center;
+  justify-content: flex-start;
+}
+
+body.aiInterview #localCard {
+  width: min(980px, 100%);
+  aspect-ratio: 16 / 9;
+}
+
+body.aiInterview #aiInterviewCard {
+  width: min(980px, 100%);
+  margin-top: 0;
+  border-radius: 22px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.68);
+  color: #e2e8f0;
+  box-shadow: 0 22px 64px rgba(2, 6, 23, 0.65);
+}
+
+body.aiInterview #aiInterviewCard .sectionEyebrow {
+  color: rgba(191, 219, 254, 0.8);
+}
+
+body.aiInterview #aiInterviewCard .aiTitle {
+  color: #f8fafc;
+}
+
+body.aiInterview #aiInterviewCard .aiProgress,
+body.aiInterview #aiInterviewCard .aiTimer {
+  color: rgba(191, 219, 254, 0.9);
+}
+
+body.aiInterview #aiInterviewCard .aiQuestion,
+body.aiInterview #aiInterviewCard .aiTranscript,
+body.aiInterview #aiInterviewCard .aiMeta,
+body.aiInterview #aiInterviewCard .aiFeedback {
+  background: rgba(2, 6, 23, 0.55);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+body.aiInterview #aiInterviewCard .aiTextarea,
+body.aiInterview #aiInterviewCard .aiResponseGrid {
+  display: none;
+}
+
+body.aiInterview #aiInterviewCard .aiFooter {
+  display: none;
+}
+
 body.inMeeting {
   overflow: hidden;
 }
