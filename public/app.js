@@ -532,8 +532,16 @@ function beginAiReviewWindow(seconds) {
   aiReviewIntervalId = setInterval(() => {
     aiReviewRemainingSec = Math.max(0, aiReviewRemainingSec - 1);
     if (aiReviewRemainingSec <= 0) {
-      stopAiReviewWindow();
-      submitAiAnswer({ finish: false, auto: true }).catch(() => {});
+      const intervalId = aiReviewIntervalId;
+      if (intervalId) {
+        clearInterval(intervalId);
+        aiReviewIntervalId = null;
+      }
+      aiReviewRemainingSec = 0;
+      syncAiMeetingButtons();
+      submitAiAnswer({ finish: false, auto: true }).catch((err) => {
+        console.error("Auto-advance failed:", err);
+      });
       return;
     }
     setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
@@ -2337,7 +2345,7 @@ if (aiRecordBtn) {
 
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
-    stopAndContinueAi().catch(() => {});
+    stopAndShowReviewAi().catch(() => {});
   });
 }
 
@@ -2363,7 +2371,7 @@ if (aiMeetingSpeakBtn) {
 
 if (aiMeetingStopBtn) {
   aiMeetingStopBtn.addEventListener("click", () => {
-    stopAndContinueAi().catch(() => {});
+    stopAndShowReviewAi().catch(() => {});
   });
 }
 

@@ -1790,12 +1790,18 @@ io.on("connection", (socket) => {
       if (stt.ok) spokenTranscript = stt.transcript;
     }
 
-    const rated = await rateAiAnswerWithOpenAI({
+    const ratingPromise = rateAiAnswerWithOpenAI({
       question: bank.prompt,
       transcript: spokenTranscript,
       typedText,
       topic: bank.topic
     });
+
+    const ratingTimeout = new Promise((resolve) =>
+      setTimeout(() => resolve({ ok: false, error: "Rating timeout" }), 15000)
+    );
+
+    const rated = await Promise.race([ratingPromise, ratingTimeout]);
     const scored = rated.ok
       ? { score: rated.score, feedback: rated.feedback }
       : scoreAiAnswer({ text: spokenTranscript || typedText, keywords: bank.keywords, stablePercent, poseWarnings });
