@@ -1141,24 +1141,42 @@ async function fetchAiTtsUrl(text) {
 }
 
 async function transcribeAiAudioBlob(blob, mimeType) {
-  if (!blob || !blob.size) return null;
+  if (!blob || !blob.size) return { ok: false, error: "Empty audio" };
   const headers = new Headers();
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   if (mimeType) headers.set("Content-Type", mimeType);
-  const res = await fetch("/api/ai/stt", {
-    method: "POST",
-    headers,
-    body: blob
-  });
+  let res = null;
+  try {
+    res = await fetch("/api/ai/stt", {
+      method: "POST",
+      headers,
+      body: blob
+    });
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+
   let body = null;
+  let rawText = "";
   try {
     body = await res.json();
   } catch {
     body = null;
+    try {
+      rawText = await res.text();
+    } catch {
+      rawText = "";
+    }
   }
-  if (!res.ok || !body?.ok) return null;
+
+  if (!res.ok || !body?.ok) {
+    const msg = String(body?.error || rawText || "Transcription failed").trim() || "Transcription failed";
+    return { ok: false, status: res.status, error: msg };
+  }
+
   const t = String(body.transcript || "").trim();
-  return t || null;
+  if (!t) return { ok: false, status: res.status, error: "Empty transcript" };
+  return { ok: true, status: res.status, transcript: t };
 }
 
 async function playAiVoice(text) {
@@ -1379,7 +1397,8 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
   syncAiMeetingButtons();
   const mt = String(mimeType || "audio/webm");
   const liveText = String(liveTranscript || "").trim();
-  const batchText = String((await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "").trim();
+  const stt = (await transcribeAiAudioBlob(blob, mt).catch(() => null)) || null;
+  const batchText = stt && stt.ok ? String(stt.transcript || "").trim() : "";
   const transcript = String(batchText || (aiUseLiveStt ? liveText : "") || "").trim();
   aiLatestTranscript = transcript || "";
 
@@ -1391,9 +1410,10 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
     if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
     if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript ready";
   } else if (aiTranscriptEl) {
-    aiTranscriptEl.textContent = "Transcript: (unavailable)";
+    const err = stt && !stt.ok ? String(stt.error || "Transcription unavailable") : "Transcript: (unavailable)";
+    aiTranscriptEl.textContent = `Transcript: (${err})`;
     aiTranscriptEl.classList.remove("hidden");
-    if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript unavailable";
+    if (aiRecorderMeta) aiRecorderMeta.textContent = stt && !stt.ok ? `Transcript error: ${String(stt.error || "").trim()}` : "Transcript unavailable";
   }
 
   aiAllowSpeak = false;
