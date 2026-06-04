@@ -187,11 +187,7 @@ async function deepgramTranscribe({ audioBuf, mimeType }) {
     },
     body: audioBuf
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const msg = text && text.length < 300 ? text : "";
-    return { ok: false, error: `Deepgram transcription failed (${res.status})${msg ? `: ${msg}` : ""}` };
-  }
+  if (!res.ok) return { ok: false, error: "Deepgram transcription failed" };
   const data = await res.json().catch(() => null);
   const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
   const text = typeof transcript === "string" ? transcript.trim() : "";
@@ -1071,7 +1067,7 @@ app.post(
   "/api/ai/stt",
   requireAuth,
   requireSebForStudents,
-  express.raw({ type: () => true, limit: "12mb" }),
+  express.raw({ type: () => true, limit: "3mb" }),
   async (req, res) => {
     const mimeType = String(req.headers["content-type"] || "audio/webm");
     const audioBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
