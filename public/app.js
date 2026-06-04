@@ -124,6 +124,15 @@ let aiLiveSttLatestText = "";
 let aiLiveSttFinalText = "";
 let aiLiveSttStopPromise = null;
 let aiQuitting = false;
+let aiAnswerIntervalId = null;
+let aiAnswerRemainingSec = 0;
+
+function formatMmSs(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds || 0)));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -530,6 +539,31 @@ function beginAiReviewWindow(seconds) {
     setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
     syncAiMeetingButtons();
   }, 1000);
+}
+
+function startAiAnswerTimer(seconds) {
+  if (aiAnswerIntervalId) clearInterval(aiAnswerIntervalId);
+  aiAnswerIntervalId = null;
+  aiAnswerRemainingSec = Math.max(0, Math.floor(Number(seconds || 0)));
+  if (aiTimerEl) aiTimerEl.textContent = formatMmSs(aiAnswerRemainingSec);
+  aiAnswerIntervalId = setInterval(() => {
+    if (aiMediaRecorder?.state !== "recording") return;
+    aiAnswerRemainingSec = Math.max(0, aiAnswerRemainingSec - 1);
+    if (aiTimerEl) aiTimerEl.textContent = formatMmSs(aiAnswerRemainingSec);
+    setAiMeetingStatus(`Recording ${formatMmSs(aiAnswerRemainingSec)}`);
+    if (aiAnswerRemainingSec <= 0) {
+      clearInterval(aiAnswerIntervalId);
+      aiAnswerIntervalId = null;
+      stopAndContinueAi().catch(() => {});
+    }
+  }, 1000);
+}
+
+async function stopAndContinueAi() {
+  if (!aiSessionId) return;
+  stopAiReviewWindow();
+  if (aiMediaRecorder?.state === "recording") await stopAiRecording({ waitMs: 12000 });
+  await submitAiAnswer({ finish: false }).catch(() => {});
 }
 
 async function confirmQuitAiInterview() {
@@ -1285,6 +1319,9 @@ function startAiPoseMonitor() {
 
 function stopAiTimer() {
   stopAiThinkCountdown();
+  if (aiAnswerIntervalId) clearInterval(aiAnswerIntervalId);
+  aiAnswerIntervalId = null;
+  aiAnswerRemainingSec = 0;
   hideAiCenterOverlay();
   aiAllowSpeak = false;
   if (aiTimerEl) aiTimerEl.textContent = "";
@@ -1540,6 +1577,7 @@ async function startAiRecording() {
   };
   aiMediaRecorder.start(250);
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
+  startAiAnswerTimer(120);
   syncAiMeetingButtons();
 }
 
@@ -1549,6 +1587,8 @@ async function stopAiRecording({ waitMs } = {}) {
   aiStopping = true;
   setAiMeetingStatus("Stopping…");
   syncAiMeetingButtons();
+  if (aiAnswerIntervalId) clearInterval(aiAnswerIntervalId);
+  aiAnswerIntervalId = null;
   const waitForStop = aiStopPromise;
   try {
     if (typeof aiMediaRecorder.requestData === "function") aiMediaRecorder.requestData();
@@ -2288,7 +2328,7 @@ if (aiRecordBtn) {
 
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
-    stopAiRecording({ waitMs: 10000 }).catch(() => {});
+    stopAndContinueAi().catch(() => {});
   });
 }
 
@@ -2314,7 +2354,7 @@ if (aiMeetingSpeakBtn) {
 
 if (aiMeetingStopBtn) {
   aiMeetingStopBtn.addEventListener("click", () => {
-    stopAiRecording({ waitMs: 10000 }).catch(() => {});
+    stopAndContinueAi().catch(() => {});
   });
 }
 
