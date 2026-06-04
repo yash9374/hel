@@ -117,6 +117,7 @@ let aiStopping = false;
 let aiFinalizedThisRecording = false;
 let aiReviewIntervalId = null;
 let aiReviewRemainingSec = 0;
+let aiUseLiveStt = false;
 let aiLiveSttSessionToken = 0;
 let aiLiveSttActiveToken = 0;
 let aiLiveSttLatestText = "";
@@ -705,10 +706,6 @@ function ensureSocket() {
     const final = String(payload?.final || "").trim();
     if (final) aiLiveSttFinalText = final;
     if (text) aiLiveSttLatestText = text;
-    if (aiTranscriptEl && (aiMediaRecorder?.state === "recording" || aiStopping) && text) {
-      aiTranscriptEl.textContent = `Transcript: ${text}`;
-      aiTranscriptEl.classList.remove("hidden");
-    }
   });
   socket.on("ai-stt-error", () => {
     aiLiveSttActiveToken = 0;
@@ -1322,13 +1319,14 @@ async function renderAiQuestion() {
   const ok = await runAiThinkCountdown(10, token);
   if (!ok || token !== aiThinkToken) return;
 
-  setAiMeetingStatus("Listening…");
-  showAiCenterOverlay("Listening…");
+  setAiMeetingStatus("Recording…");
+  showAiCenterOverlay("Recording…");
   aiAllowSpeak = true;
   aiQuestionStartedAt = Date.now();
   startAiPoseMonitor();
-  if (aiRecorderMeta) aiRecorderMeta.textContent = "Press Speak, answer, then press Stop.";
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Recording started. Speak clearly, then press Stop.";
   syncAiMeetingButtons();
+  startAiRecording().catch(() => {});
 }
 
 async function startAiLiveStt(mimeType) {
@@ -1381,13 +1379,9 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
   syncAiMeetingButtons();
   const mt = String(mimeType || "audio/webm");
   const liveText = String(liveTranscript || "").trim();
-  let transcript = liveText;
-  if (!transcript || transcript.length < 10) {
-    const batchText = String((await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "").trim();
-    if (!transcript || batchText.length > transcript.length) transcript = batchText;
-  }
-  transcript = String(transcript || "").trim();
-  aiLatestTranscript = transcript;
+  const batchText = String((await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "").trim();
+  const transcript = String(batchText || (aiUseLiveStt ? liveText : "") || "").trim();
+  aiLatestTranscript = transcript || "";
 
   if (transcript) {
     if (aiTranscriptEl) {
@@ -1438,9 +1432,9 @@ async function startAiRecording() {
   }
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-  startAiLiveStt(aiMediaRecorder?.mimeType || mimeType).catch(() => {});
-  setAiMeetingStatus("Listening…");
-  showAiCenterOverlay("Listening…");
+  if (aiUseLiveStt) startAiLiveStt(aiMediaRecorder?.mimeType || mimeType).catch(() => {});
+  setAiMeetingStatus("Recording…");
+  showAiCenterOverlay("Recording…");
   syncAiMeetingButtons();
 
   const stopPromise = new Promise((resolve) => {
@@ -1451,6 +1445,7 @@ async function startAiRecording() {
   aiMediaRecorder.ondataavailable = (e) => {
     if (!e.data || !e.data.size) return;
     aiAudioChunks.push(e.data);
+    if (!aiUseLiveStt) return;
     const token = aiLiveSttActiveToken;
     if (!token) return;
     e.data
@@ -1473,10 +1468,9 @@ async function startAiRecording() {
       aiLatestAudioBuffer = null;
       if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
     }
-    const liveTranscript = await Promise.race([
-      stopAiLiveStt(),
-      new Promise((resolve) => setTimeout(() => resolve(""), 2500))
-    ]);
+    const liveTranscript = aiUseLiveStt
+      ? await Promise.race([stopAiLiveStt(), new Promise((resolve) => setTimeout(() => resolve(""), 2500))])
+      : "";
     await finalizeAiRecording({ blob, mimeType: mt, liveTranscript });
     if (aiStopPromiseResolve) aiStopPromiseResolve();
     aiStopPromise = null;
