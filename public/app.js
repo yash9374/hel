@@ -2337,7 +2337,7 @@ if (aiRecordBtn) {
 
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
-    stopAndShowReviewAi().catch(() => {});
+    stopAndContinueAi().catch(() => {});
   });
 }
 
@@ -2363,7 +2363,7 @@ if (aiMeetingSpeakBtn) {
 
 if (aiMeetingStopBtn) {
   aiMeetingStopBtn.addEventListener("click", () => {
-    stopAndShowReviewAi().catch(() => {});
+    stopAndContinueAi().catch(() => {});
   });
 }
 
