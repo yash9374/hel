@@ -123,6 +123,7 @@ let aiLiveSttActiveToken = 0;
 let aiLiveSttLatestText = "";
 let aiLiveSttFinalText = "";
 let aiLiveSttStopPromise = null;
+let aiQuitting = false;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -523,8 +524,7 @@ function beginAiReviewWindow(seconds) {
     aiReviewRemainingSec = Math.max(0, aiReviewRemainingSec - 1);
     if (aiReviewRemainingSec <= 0) {
       stopAiReviewWindow();
-      setAiMeetingStatus("Ready");
-      syncAiMeetingButtons();
+      submitAiAnswer({ finish: false, auto: true }).catch(() => {});
       return;
     }
     setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
@@ -532,36 +532,52 @@ function beginAiReviewWindow(seconds) {
   }, 1000);
 }
 
-async function quitAiInterview() {
+async function confirmQuitAiInterview() {
+  const ok = window.confirm("Do you want to quit the interview?");
+  if (!ok) return;
+  aiQuitting = true;
   stopAiReviewWindow();
   stopAiTimer();
   stopAiPoseMonitor();
   stopAiSpeech();
   hideAiCenterOverlay();
-  try {
-    if (aiMediaRecorder?.state === "recording") await stopAiRecording({ waitMs: 2500 });
-  } catch {
-  }
-  aiSessionId = null;
-  aiQuestions = [];
-  aiQuestionIndex = 0;
-  aiActiveScheduleId = null;
-  aiAnswerReady = false;
-  aiHasRecordedThisQuestion = false;
   aiAllowSpeak = false;
-  aiStopping = false;
-  aiFinalizedThisRecording = false;
-  aiLiveSttActiveToken = 0;
-  aiLiveSttStopPromise = null;
+
   try {
-    if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
-      await document.exitFullscreen();
+    if (aiMediaRecorder?.state === "recording") {
+      try {
+        if (typeof aiMediaRecorder.requestData === "function") aiMediaRecorder.requestData();
+      } catch {
+      }
+      try {
+        aiMediaRecorder.stop();
+      } catch {
+      }
     }
   } catch {
   }
+
+  if (aiSessionId) {
+    try {
+      await Promise.race([
+        new Promise((resolve) => {
+          ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, () => resolve(true));
+        }),
+        new Promise((resolve) => setTimeout(() => resolve(false), 6000))
+      ]);
+    } catch {
+    }
+  }
+
+  aiSessionId = null;
+  aiQuestions = [];
+  aiQuestionIndex = 0;
+  aiAnswerReady = false;
+  aiHasRecordedThisQuestion = false;
+  aiStopping = false;
+  aiFinalizedThisRecording = false;
   setAiMode(false);
-  meetingInfo.classList.remove("hidden");
-  meetingInfo.textContent = "You quit the AI interview.";
+  aiQuitting = false;
 }
 
 function showAiCenterOverlay(text) {
@@ -618,21 +634,15 @@ function syncAiMeetingButtons() {
   const canSubmit = !aiSubmitting && !isRecording && aiAnswerReady;
   if (aiMeetingNextBtn) {
     aiMeetingNextBtn.disabled = !canSubmit;
-    aiMeetingNextBtn.textContent = aiReviewRemainingSec > 0 ? `Proceed (${aiReviewRemainingSec}s)` : "Next";
+    aiMeetingNextBtn.textContent = aiReviewRemainingSec > 0 ? `Proceed (${aiReviewRemainingSec}s)` : "Proceed";
   }
-  if (aiMeetingFinishBtn) {
-    aiMeetingFinishBtn.disabled = aiSubmitting || aiStopping;
-    aiMeetingFinishBtn.textContent = "Quit";
-  }
+  if (aiMeetingFinishBtn) aiMeetingFinishBtn.disabled = aiSubmitting;
 
   if (aiRecordBtn) aiRecordBtn.disabled = !canSpeak;
   if (aiStopBtn) aiStopBtn.disabled = !isRecording || aiStopping;
   const submitDisabled = !canSubmit;
   if (aiNextBtn) aiNextBtn.disabled = submitDisabled;
-  if (aiFinishBtn) {
-    aiFinishBtn.disabled = aiSubmitting || aiStopping;
-    aiFinishBtn.textContent = "Quit";
-  }
+  if (aiFinishBtn) aiFinishBtn.disabled = submitDisabled;
 }
 
 function mountAiMeetingUI() {
@@ -1500,6 +1510,14 @@ async function startAiRecording() {
       .catch(() => {});
   };
   aiMediaRecorder.onstop = async () => {
+    if (aiQuitting) {
+      if (aiStopPromiseResolve) aiStopPromiseResolve();
+      aiStopPromise = null;
+      aiStopPromiseResolve = null;
+      aiStopping = false;
+      syncAiMeetingButtons();
+      return;
+    }
     const mt = aiMediaRecorder?.mimeType || "audio/webm";
     aiLatestAudioMimeType = mt;
     const blob = new Blob(aiAudioChunks, { type: mt });
@@ -1636,9 +1654,12 @@ async function submitAiAnswer({ finish, auto }) {
       poseWarnings: warnings
     }
   };
-  const res = await new Promise((resolve) => {
-    ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
-  });
+  const res = await Promise.race([
+    new Promise((resolve) => {
+      ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
+    }),
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 12000))
+  ]);
   if (!res.ok) {
     if (aiFeedbackEl) {
       aiFeedbackEl.classList.remove("hidden");
@@ -1672,9 +1693,12 @@ async function submitAiAnswer({ finish, auto }) {
 
   const nextIndex = aiQuestionIndex + 1;
   if (finish || nextIndex >= aiQuestions.length) {
-    const fin = await new Promise((resolve) => {
-      ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
-    });
+    const fin = await Promise.race([
+      new Promise((resolve) => {
+        ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
+      }),
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 12000))
+    ]);
     if (!fin.ok) {
       if (aiFeedbackEl) {
         aiFeedbackEl.classList.remove("hidden");
@@ -1682,6 +1706,7 @@ async function submitAiAnswer({ finish, auto }) {
       }
       setAiMeetingStatus("Ready");
       syncAiMeetingButtons();
+      aiSubmitting = false;
       return;
     }
     const report = fin.report || null;
@@ -2276,9 +2301,8 @@ if (aiNextBtn) {
 
 if (aiFinishBtn) {
   aiFinishBtn.addEventListener("click", () => {
-    const ok = window.confirm("Do you want to quit the interview?");
-    if (!ok) return;
-    quitAiInterview().catch(() => {});
+    stopAiReviewWindow();
+    confirmQuitAiInterview().catch(() => {});
   });
 }
 
@@ -2303,9 +2327,8 @@ if (aiMeetingNextBtn) {
 
 if (aiMeetingFinishBtn) {
   aiMeetingFinishBtn.addEventListener("click", () => {
-    const ok = window.confirm("Do you want to quit the interview?");
-    if (!ok) return;
-    quitAiInterview().catch(() => {});
+    stopAiReviewWindow();
+    confirmQuitAiInterview().catch(() => {});
   });
 }
 

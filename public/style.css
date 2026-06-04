@@ -1333,6 +1333,13 @@ body.aiInterview #aiMeetingBar {
   display: inline-flex;
 }
 
+body.aiInterview #aiMeetingFinishBtn {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 30;
+}
+
 body.aiInterview .meetingStage {
   align-items: center;
   justify-content: flex-start;
@@ -1344,17 +1351,7 @@ body.aiInterview #localCard {
   bottom: 92px;
   width: min(320px, 42vw);
   aspect-ratio: 16 / 9;
-  z-index: 4;
-}
-
-body.aiInterview #aiMeetingFinishBtn {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 30;
-  border-color: rgba(239, 68, 68, 0.55);
-  background: rgba(239, 68, 68, 0.28);
-  color: rgba(254, 226, 226, 0.98);
+  z-index: 12;
 }
 
 body.aiInterview #aiInterviewCard {
