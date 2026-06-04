@@ -1702,11 +1702,12 @@ async function submitAiAnswer({ finish, auto }) {
       poseWarnings: warnings
     }
   };
+  setAiMeetingStatus("Submitting… (this may take up to 2 minutes)");
   const res = await Promise.race([
     new Promise((resolve) => {
       ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
     }),
-    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 30000))
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 120000))
   ]);
   if (!res.ok) {
     if (aiFeedbackEl) {
@@ -1745,7 +1746,7 @@ async function submitAiAnswer({ finish, auto }) {
       new Promise((resolve) => {
         ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
       }),
-      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 30000))
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 120000))
     ]);
     if (!fin.ok) {
       if (aiFeedbackEl) {
