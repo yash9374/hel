@@ -1066,8 +1066,7 @@ app.post("/api/ai/tts", requireAuth, requireSebForStudents, async (req, res) => 
 app.post(
   "/api/ai/stt",
   requireAuth,
-  requireSebForStudents,
-  express.raw({ type: () => true, limit: "3mb" }),
+  express.raw({ type: () => true, limit: "15mb" }),
   async (req, res) => {
     const mimeType = String(req.headers["content-type"] || "audio/webm");
     const audioBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);

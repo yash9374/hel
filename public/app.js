@@ -1141,7 +1141,7 @@ async function fetchAiTtsUrl(text) {
 }
 
 async function transcribeAiAudioBlob(blob, mimeType) {
-  if (!blob || !blob.size) return null;
+  if (!blob || !blob.size) return { ok: false, error: "No audio captured" };
   const headers = new Headers();
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   if (mimeType) headers.set("Content-Type", mimeType);
@@ -1156,9 +1156,13 @@ async function transcribeAiAudioBlob(blob, mimeType) {
   } catch {
     body = null;
   }
-  if (!res.ok || !body?.ok) return null;
+  if (!res.ok || !body?.ok) {
+    const err = String(body?.error || `Transcription failed (HTTP ${res.status})`).trim();
+    return { ok: false, status: res.status, error: err || "Transcription failed" };
+  }
   const t = String(body.transcript || "").trim();
-  return t || null;
+  if (!t) return { ok: false, status: res.status, error: "Empty transcript" };
+  return { ok: true, transcript: t };
 }
 
 async function playAiVoice(text) {
@@ -1379,8 +1383,8 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
   syncAiMeetingButtons();
   const mt = String(mimeType || "audio/webm");
   const liveText = String(liveTranscript || "").trim();
-  const batchText = String((await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "").trim();
-  const transcript = String(batchText || (aiUseLiveStt ? liveText : "") || "").trim();
+  const stt = await transcribeAiAudioBlob(blob, mt).catch(() => ({ ok: false, error: "Transcription failed" }));
+  const transcript = String(stt?.ok ? stt.transcript : "" || (aiUseLiveStt ? liveText : "") || "").trim();
   aiLatestTranscript = transcript || "";
 
   if (transcript) {
@@ -1391,9 +1395,9 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
     if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
     if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript ready";
   } else if (aiTranscriptEl) {
-    aiTranscriptEl.textContent = "Transcript: (unavailable)";
+    aiTranscriptEl.textContent = `Transcript: (${String(stt?.error || "unavailable")})`;
     aiTranscriptEl.classList.remove("hidden");
-    if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript unavailable";
+    if (aiRecorderMeta) aiRecorderMeta.textContent = String(stt?.error || "Transcript unavailable");
   }
 
   aiAllowSpeak = false;
@@ -1408,6 +1412,7 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
 async function startAiRecording() {
   if (aiMediaRecorder && aiMediaRecorder.state === "recording") return;
   if (!aiAllowSpeak || aiHasRecordedThisQuestion) return;
+  setMicEnabled(true);
   await ensureCamera();
   const audioTracks = cameraStream?.getAudioTracks?.() || [];
   if (!audioTracks.length) {
@@ -1415,6 +1420,7 @@ async function startAiRecording() {
     meetingInfo.textContent = "Microphone not available.";
     return;
   }
+  for (const t of audioTracks) t.enabled = true;
   const stream = new MediaStream([audioTracks[0]]);
   let mimeType = "";
   if (window.MediaRecorder?.isTypeSupported?.("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
