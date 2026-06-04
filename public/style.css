@@ -1297,6 +1297,41 @@ video {
   background: rgba(37, 99, 235, 0.18);
 }
 
+.aiThinkOverlay {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 22px;
+  border-radius: 20px;
+  background: rgba(2, 6, 23, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.62);
+  backdrop-filter: blur(14px);
+  pointer-events: none;
+}
+
+.aiThinkCount {
+  font-size: 64px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: #f8fafc;
+}
+
+.aiThinkLabel {
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(191, 219, 254, 0.9);
+}
+
 body.aiInterview #remoteVideos {
   display: none;
 }
@@ -1378,34 +1413,6 @@ body.aiInterview #aiInterviewCard .aiResponseGrid {
 
 body.aiInterview #aiInterviewCard .aiFooter {
   display: none;
-}
-
-body.aiInterview .aiThinkOverlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 20;
-  pointer-events: none;
-}
-
-body.aiInterview .aiThinkPanel {
-  padding: 22px 26px;
-  border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(2, 6, 23, 0.82);
-  box-shadow: 0 26px 72px rgba(2, 6, 23, 0.7);
-  backdrop-filter: blur(14px);
-}
-
-body.aiInterview .aiThinkText {
-  color: #f8fafc;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  text-align: center;
-  font-size: clamp(28px, 3.4vw, 44px);
-  line-height: 1.15;
 }
 
 body.inMeeting {
