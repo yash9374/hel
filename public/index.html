@@ -271,6 +271,9 @@
       </section>
 
       <section id="meeting" class="panel meetingPanel hidden">
+        <div id="aiCenterOverlay" class="aiCenterOverlay hidden" aria-live="polite">
+          <div id="aiCenterOverlayText" class="aiCenterOverlayText"></div>
+        </div>
         <div class="meetingStage">
           <div class="videoCard localCard" id="localCard">
             <div class="videoLabel">You</div>
@@ -305,7 +308,7 @@
           </div>
           <div id="aiMeetingBar" class="aiMeetingBar hidden">
             <div id="aiMeetingStatus" class="aiMeetingStatus">Listening…</div>
-            <button id="aiMeetingRetryBtn" class="controlBtn" type="button">Record again</button>
+            <button id="aiMeetingSpeakBtn" class="controlBtn" type="button">Speak</button>
             <button id="aiMeetingStopBtn" class="controlBtn danger" type="button">Stop</button>
             <button id="aiMeetingNextBtn" class="controlBtn" type="button">Next</button>
             <button id="aiMeetingFinishBtn" class="controlBtn" type="button">Finish</button>

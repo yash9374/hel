@@ -1297,6 +1297,29 @@ video {
   background: rgba(37, 99, 235, 0.18);
 }
 
+.aiCenterOverlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 25;
+}
+
+.aiCenterOverlayText {
+  width: min(860px, calc(100vw - 40px));
+  padding: 22px 26px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(2, 6, 23, 0.72);
+  color: #f8fafc;
+  font-size: clamp(1.45rem, 3.2vw, 2.5rem);
+  font-weight: 900;
+  text-align: center;
+  box-shadow: 0 30px 90px rgba(2, 6, 23, 0.7);
+  letter-spacing: -0.02em;
+}
+
 body.aiInterview #remoteVideos {
   display: none;
 }
@@ -1341,6 +1364,10 @@ body.aiInterview #aiInterviewCard .aiTitle {
 body.aiInterview #aiInterviewCard .aiProgress,
 body.aiInterview #aiInterviewCard .aiTimer {
   color: rgba(191, 219, 254, 0.9);
+}
+
+body.aiInterview #aiInterviewCard .aiTimer {
+  display: none;
 }
 
 body.aiInterview #aiInterviewCard .aiQuestion,
