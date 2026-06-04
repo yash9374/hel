@@ -297,6 +297,11 @@
             <video id="localVideo" autoplay playsinline muted></video>
           </div>
           <div id="remoteVideos" class="remoteGrid"></div>
+          <div id="aiThinkOverlay" class="aiThinkOverlay hidden" aria-live="polite">
+            <div class="aiThinkPanel">
+              <div id="aiThinkText" class="aiThinkText">You have 10 seconds to think…</div>
+            </div>
+          </div>
         </div>
 
         <div class="meetingBar">
@@ -305,7 +310,6 @@
           </div>
           <div id="aiMeetingBar" class="aiMeetingBar hidden">
             <div id="aiMeetingStatus" class="aiMeetingStatus">Listening…</div>
-            <button id="aiMeetingRetryBtn" class="controlBtn" type="button">Record again</button>
             <button id="aiMeetingStopBtn" class="controlBtn danger" type="button">Stop</button>
             <button id="aiMeetingNextBtn" class="controlBtn" type="button">Next</button>
             <button id="aiMeetingFinishBtn" class="controlBtn" type="button">Finish</button>
