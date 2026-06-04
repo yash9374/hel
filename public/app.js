@@ -113,6 +113,15 @@ let aiSpeakAudio = null;
 let aiSpeakUrl = null;
 let aiSubmitting = false;
 let aiAutoStartAttemptedForScheduleId = null;
+let aiStopping = false;
+let aiFinalizedThisRecording = false;
+let aiReviewIntervalId = null;
+let aiReviewRemainingSec = 0;
+let aiLiveSttSessionToken = 0;
+let aiLiveSttActiveToken = 0;
+let aiLiveSttLatestText = "";
+let aiLiveSttFinalText = "";
+let aiLiveSttStopPromise = null;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -454,13 +463,16 @@ async function ensureCamera() {
 }
 
 function syncControlUI() {
-  micBtn.classList.toggle("off", !micEnabled);
-  camBtn.classList.toggle("off", !cameraEnabled);
+  const actualMicOn = cameraStream?.getAudioTracks?.()?.some?.((t) => t && t.enabled && t.readyState === "live") ?? micEnabled;
+  const actualCamOn = cameraStream?.getVideoTracks?.()?.some?.((t) => t && t.enabled && t.readyState === "live") ?? cameraEnabled;
 
-  micBtn.textContent = micEnabled ? "Mic on" : "Mic off";
-  camBtn.textContent = cameraEnabled ? "Camera on" : "Camera off";
+  micBtn.classList.toggle("off", !actualMicOn);
+  camBtn.classList.toggle("off", !actualCamOn);
 
-  localOff.classList.toggle("hidden", cameraEnabled || isScreenSharing);
+  micBtn.textContent = actualMicOn ? "Mic on" : "Mic off";
+  camBtn.textContent = actualCamOn ? "Camera on" : "Camera off";
+
+  localOff.classList.toggle("hidden", actualCamOn || isScreenSharing);
   screenShareBtn.textContent = isScreenSharing ? "Stop share" : "Share screen";
 }
 
@@ -490,6 +502,32 @@ function setAiMeetingStatus(text) {
   const value = String(text || "").trim() || "Listening…";
   if (aiHudStatusEl) aiHudStatusEl.textContent = value;
   if (aiMeetingStatusEl) aiMeetingStatusEl.textContent = value;
+}
+
+function stopAiReviewWindow() {
+  if (aiReviewIntervalId) clearInterval(aiReviewIntervalId);
+  aiReviewIntervalId = null;
+  aiReviewRemainingSec = 0;
+  syncAiMeetingButtons();
+}
+
+function beginAiReviewWindow(seconds) {
+  stopAiReviewWindow();
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  if (!total) return;
+  aiReviewRemainingSec = total;
+  setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
+  syncAiMeetingButtons();
+  aiReviewIntervalId = setInterval(() => {
+    aiReviewRemainingSec = Math.max(0, aiReviewRemainingSec - 1);
+    if (aiReviewRemainingSec <= 0) {
+      stopAiReviewWindow();
+      submitAiAnswer({ finish: false, auto: true }).catch(() => {});
+      return;
+    }
+    setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
+    syncAiMeetingButtons();
+  }, 1000);
 }
 
 function showAiCenterOverlay(text) {
@@ -534,18 +572,30 @@ async function runAiThinkCountdown(seconds, token) {
 
 function syncAiMeetingButtons() {
   const isRecording = aiMediaRecorder?.state === "recording";
-  const canSpeak = !aiSubmitting && !aiAnswerReady && !aiHasRecordedThisQuestion && aiAllowSpeak && !isRecording;
+  const canSpeak = !aiSubmitting && !aiStopping && !aiAnswerReady && !aiHasRecordedThisQuestion && aiAllowSpeak && !isRecording;
   if (aiMeetingSpeakBtn) {
     aiMeetingSpeakBtn.disabled = !canSpeak;
     aiMeetingSpeakBtn.classList.toggle("hidden", !aiAllowSpeak || aiHasRecordedThisQuestion || isRecording);
   }
   if (aiMeetingStopBtn) {
-    aiMeetingStopBtn.disabled = !isRecording;
+    aiMeetingStopBtn.disabled = !isRecording || aiStopping;
     aiMeetingStopBtn.classList.toggle("hidden", !isRecording);
   }
   const canSubmit = !aiSubmitting && !isRecording && aiAnswerReady;
-  if (aiMeetingNextBtn) aiMeetingNextBtn.disabled = !canSubmit;
-  if (aiMeetingFinishBtn) aiMeetingFinishBtn.disabled = !canSubmit;
+  if (aiMeetingNextBtn) {
+    aiMeetingNextBtn.disabled = !canSubmit;
+    aiMeetingNextBtn.textContent = aiReviewRemainingSec > 0 ? `Proceed (${aiReviewRemainingSec}s)` : "Next";
+  }
+  if (aiMeetingFinishBtn) {
+    aiMeetingFinishBtn.disabled = !canSubmit;
+    aiMeetingFinishBtn.textContent = aiReviewRemainingSec > 0 ? `Finish (${aiReviewRemainingSec}s)` : "Finish";
+  }
+
+  if (aiRecordBtn) aiRecordBtn.disabled = !canSpeak;
+  if (aiStopBtn) aiStopBtn.disabled = !isRecording || aiStopping;
+  const submitDisabled = !canSubmit;
+  if (aiNextBtn) aiNextBtn.disabled = submitDisabled;
+  if (aiFinishBtn) aiFinishBtn.disabled = submitDisabled;
 }
 
 function mountAiMeetingUI() {
@@ -647,6 +697,23 @@ function ensureSocket() {
   });
   socket.on("disconnect", () => setStatus("Disconnected"));
   socket.on("connect_error", () => setStatus("Connection error"));
+
+  socket.on("ai-stt", (payload) => {
+    const token = aiLiveSttActiveToken;
+    if (!token) return;
+    const text = String(payload?.text || "").trim();
+    const final = String(payload?.final || "").trim();
+    if (final) aiLiveSttFinalText = final;
+    if (text) aiLiveSttLatestText = text;
+    if (aiTranscriptEl && (aiMediaRecorder?.state === "recording" || aiStopping) && text) {
+      aiTranscriptEl.textContent = `Transcript: ${text}`;
+      aiTranscriptEl.classList.remove("hidden");
+    }
+  });
+  socket.on("ai-stt-error", () => {
+    aiLiveSttActiveToken = 0;
+    aiLiveSttStopPromise = null;
+  });
 
   socket.on("dashboard-update", (payload) => {
     lastDashboard = payload || null;
@@ -1187,6 +1254,9 @@ function setAiMode(active) {
     unmountAiMeetingUI();
     stopAiPoseMonitor();
     stopAiTimer();
+    stopAiReviewWindow();
+    aiLiveSttActiveToken = 0;
+    aiLiveSttStopPromise = null;
     stopAiSpeech();
     if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
     if (aiTranscriptEl) aiTranscriptEl.classList.add("hidden");
@@ -1209,6 +1279,7 @@ async function renderAiQuestion() {
   if (!q) return;
   aiThinkToken += 1;
   stopAiTimer();
+  stopAiReviewWindow();
   stopAiSpeech();
   stopAiPoseMonitor();
   hideAiCenterOverlay();
@@ -1226,6 +1297,12 @@ async function renderAiQuestion() {
   aiAnswerReady = false;
   aiHasRecordedThisQuestion = false;
   aiAllowSpeak = false;
+  aiStopping = false;
+  aiFinalizedThisRecording = false;
+  aiLiveSttActiveToken = 0;
+  aiLiveSttLatestText = "";
+  aiLiveSttFinalText = "";
+  aiLiveSttStopPromise = null;
   aiQuestionStartedAt = 0;
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
   if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
@@ -1254,6 +1331,86 @@ async function renderAiQuestion() {
   syncAiMeetingButtons();
 }
 
+async function startAiLiveStt(mimeType) {
+  const sock = ensureSocket();
+  const token = (aiLiveSttSessionToken += 1);
+  aiLiveSttActiveToken = token;
+  aiLiveSttLatestText = "";
+  aiLiveSttFinalText = "";
+  aiLiveSttStopPromise = null;
+  const res = await new Promise((resolve) => {
+    sock.emit("ai-stt-start", { mimeType: String(mimeType || "") }, (ack) => resolve(ack || { ok: false }));
+  });
+  if (!res.ok) {
+    if (aiLiveSttActiveToken === token) aiLiveSttActiveToken = 0;
+    return { ok: false };
+  }
+  return { ok: true, token };
+}
+
+async function stopAiLiveStt() {
+  const token = aiLiveSttActiveToken;
+  if (!token) return "";
+  if (aiLiveSttStopPromise) {
+    try {
+      const t = await aiLiveSttStopPromise;
+      return t || "";
+    } catch {
+      return "";
+    }
+  }
+  const sock = ensureSocket();
+  aiLiveSttStopPromise = new Promise((resolve) => {
+    sock.emit("ai-stt-stop", {}, (ack) => {
+      if (aiLiveSttActiveToken === token) aiLiveSttActiveToken = 0;
+      resolve(String(ack?.transcript || "").trim());
+    });
+  });
+  try {
+    const t = await aiLiveSttStopPromise;
+    return t || "";
+  } catch {
+    return "";
+  }
+}
+
+async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
+  if (aiFinalizedThisRecording) return;
+  aiFinalizedThisRecording = true;
+  setAiMeetingStatus("Transcribing…");
+  syncAiMeetingButtons();
+  const mt = String(mimeType || "audio/webm");
+  const liveText = String(liveTranscript || "").trim();
+  let transcript = liveText;
+  if (!transcript || transcript.length < 10) {
+    const batchText = String((await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "").trim();
+    if (!transcript || batchText.length > transcript.length) transcript = batchText;
+  }
+  transcript = String(transcript || "").trim();
+  aiLatestTranscript = transcript;
+
+  if (transcript) {
+    if (aiTranscriptEl) {
+      aiTranscriptEl.textContent = `Transcript: ${transcript}`;
+      aiTranscriptEl.classList.remove("hidden");
+    }
+    if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
+    if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript ready";
+  } else if (aiTranscriptEl) {
+    aiTranscriptEl.textContent = "Transcript: (unavailable)";
+    aiTranscriptEl.classList.remove("hidden");
+    if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript unavailable";
+  }
+
+  aiAllowSpeak = false;
+  aiHasRecordedThisQuestion = true;
+  aiAnswerReady = true;
+  aiStopping = false;
+  hideAiCenterOverlay();
+  beginAiReviewWindow(20);
+  syncAiMeetingButtons();
+}
+
 async function startAiRecording() {
   if (aiMediaRecorder && aiMediaRecorder.state === "recording") return;
   if (!aiAllowSpeak || aiHasRecordedThisQuestion) return;
@@ -1272,12 +1429,16 @@ async function startAiRecording() {
   aiLatestAudioBuffer = null;
   aiLatestTranscript = "";
   aiAnswerReady = false;
+  aiStopping = false;
+  aiFinalizedThisRecording = false;
+  stopAiReviewWindow();
   if (aiTranscriptEl) {
     aiTranscriptEl.textContent = "";
     aiTranscriptEl.classList.add("hidden");
   }
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  startAiLiveStt(aiMediaRecorder?.mimeType || mimeType).catch(() => {});
   setAiMeetingStatus("Listening…");
   showAiCenterOverlay("Listening…");
   syncAiMeetingButtons();
@@ -1288,7 +1449,18 @@ async function startAiRecording() {
   aiStopPromise = stopPromise;
 
   aiMediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size) aiAudioChunks.push(e.data);
+    if (!e.data || !e.data.size) return;
+    aiAudioChunks.push(e.data);
+    const token = aiLiveSttActiveToken;
+    if (!token) return;
+    e.data
+      .arrayBuffer()
+      .then((buf) => {
+        if (!buf || !buf.byteLength) return;
+        if (token !== aiLiveSttActiveToken) return;
+        ensureSocket().emit("ai-stt-chunk", { audio: buf }, () => {});
+      })
+      .catch(() => {});
   };
   aiMediaRecorder.onstop = async () => {
     const mt = aiMediaRecorder?.mimeType || "audio/webm";
@@ -1301,30 +1473,16 @@ async function startAiRecording() {
       aiLatestAudioBuffer = null;
       if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
     }
-    setAiMeetingStatus("Transcribing…");
-    syncAiMeetingButtons();
-    const transcript = (await transcribeAiAudioBlob(blob, mt).catch(() => null)) || "";
-    aiLatestTranscript = transcript || "";
-    if (transcript) {
-      if (aiTranscriptEl) {
-        aiTranscriptEl.textContent = `Transcript: ${transcript}`;
-        aiTranscriptEl.classList.remove("hidden");
-      }
-      if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
-      if (aiRecorderMeta) aiRecorderMeta.textContent = "Transcript ready";
-    } else if (aiTranscriptEl) {
-      aiTranscriptEl.textContent = "Transcript: (unavailable)";
-      aiTranscriptEl.classList.remove("hidden");
-    }
-    aiAllowSpeak = false;
-    aiHasRecordedThisQuestion = true;
-    aiAnswerReady = true;
-    hideAiCenterOverlay();
-    setAiMeetingStatus("Ready");
-    syncAiMeetingButtons();
+    const liveTranscript = await Promise.race([
+      stopAiLiveStt(),
+      new Promise((resolve) => setTimeout(() => resolve(""), 2500))
+    ]);
+    await finalizeAiRecording({ blob, mimeType: mt, liveTranscript });
     if (aiStopPromiseResolve) aiStopPromiseResolve();
     aiStopPromise = null;
     aiStopPromiseResolve = null;
+    aiStopping = false;
+    syncAiMeetingButtons();
   };
   aiMediaRecorder.start(250);
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
@@ -1334,20 +1492,42 @@ async function startAiRecording() {
 async function stopAiRecording({ waitMs } = {}) {
   if (!aiMediaRecorder) return;
   if (aiMediaRecorder.state !== "recording") return;
+  aiStopping = true;
   setAiMeetingStatus("Stopping…");
   syncAiMeetingButtons();
   const waitForStop = aiStopPromise;
   try {
+    if (typeof aiMediaRecorder.requestData === "function") aiMediaRecorder.requestData();
     aiMediaRecorder.stop();
   } catch {
   }
   if (waitForStop) {
     try {
       const ms = typeof waitMs === "number" ? waitMs : 2500;
-      await Promise.race([waitForStop, new Promise((r) => setTimeout(r, Math.max(0, ms)))]);
+      const done = await Promise.race([waitForStop.then(() => true), new Promise((r) => setTimeout(() => r(false), Math.max(0, ms)))]);
+      if (!done && !aiFinalizedThisRecording && aiAudioChunks.length) {
+        const mt = aiMediaRecorder?.mimeType || aiLatestAudioMimeType || "audio/webm";
+        const blob = new Blob(aiAudioChunks, { type: mt });
+        const liveTranscript = await Promise.race([
+          stopAiLiveStt(),
+          new Promise((resolve) => setTimeout(() => resolve(""), 2500))
+        ]);
+        try {
+          aiLatestAudioMimeType = mt;
+          aiLatestAudioBuffer = await blob.arrayBuffer();
+        } catch {
+          aiLatestAudioBuffer = null;
+        }
+        await finalizeAiRecording({ blob, mimeType: mt, liveTranscript });
+        if (aiStopPromiseResolve) aiStopPromiseResolve();
+        aiStopPromise = null;
+        aiStopPromiseResolve = null;
+      }
     } catch {
     }
   }
+  aiStopping = false;
+  syncAiMeetingButtons();
 }
 
 async function startAiInterview() {
@@ -2053,12 +2233,14 @@ if (aiStopBtn) {
 
 if (aiNextBtn) {
   aiNextBtn.addEventListener("click", () => {
+    stopAiReviewWindow();
     submitAiAnswer({ finish: false }).catch(() => {});
   });
 }
 
 if (aiFinishBtn) {
   aiFinishBtn.addEventListener("click", () => {
+    stopAiReviewWindow();
     submitAiAnswer({ finish: true }).catch(() => {});
   });
 }
@@ -2077,12 +2259,14 @@ if (aiMeetingStopBtn) {
 
 if (aiMeetingNextBtn) {
   aiMeetingNextBtn.addEventListener("click", () => {
+    stopAiReviewWindow();
     submitAiAnswer({ finish: false }).catch(() => {});
   });
 }
 
 if (aiMeetingFinishBtn) {
   aiMeetingFinishBtn.addEventListener("click", () => {
+    stopAiReviewWindow();
     submitAiAnswer({ finish: true }).catch(() => {});
   });
 }
