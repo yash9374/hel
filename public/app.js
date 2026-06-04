@@ -27,7 +27,6 @@ const aiTimerEl = document.getElementById("aiTimer");
 const aiQuestionEl = document.getElementById("aiQuestion");
 const aiTranscriptEl = document.getElementById("aiTranscript");
 const aiAnswerInput = document.getElementById("aiAnswerInput");
-const aiRecordBtn = document.getElementById("aiRecordBtn");
 const aiStopBtn = document.getElementById("aiStopBtn");
 const aiRecorderMeta = document.getElementById("aiRecorderMeta");
 const aiPoseMeta = document.getElementById("aiPoseMeta");
@@ -100,7 +99,6 @@ let aiLatestAudioMimeType = "audio/webm";
 let aiLatestTranscript = "";
 let aiStopPromise = null;
 let aiStopPromiseResolve = null;
-let aiRecordingAttempts = 0;
 let aiMeetingMounted = false;
 let aiPoseIntervalId = null;
 let aiPoseStableTotal = 0;
@@ -1358,13 +1356,11 @@ async function renderAiQuestion() {
   }
   aiLatestAudioBuffer = null;
   aiAudioChunks = [];
-  aiRecordingAttempts = 0;
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
   if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
   stopAiTimer();
   stopAiSpeech();
   if (aiTimerEl) aiTimerEl.textContent = formatAiTimer(Math.max(0, Number(q.seconds || 0) * 1000));
-  if (aiRecordBtn) aiRecordBtn.disabled = true;
   if (aiStopBtn) aiStopBtn.disabled = true;
   if (aiNextBtn) aiNextBtn.disabled = true;
   if (aiFinishBtn) aiFinishBtn.disabled = true;
@@ -1376,7 +1372,6 @@ async function renderAiQuestion() {
   await runAiThinkCountdown(10);
   setAiMeetingStatus("Listening…");
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Listening…";
-  if (aiRecordBtn) aiRecordBtn.disabled = false;
   if (aiStopBtn) aiStopBtn.disabled = true;
   await beginAiAnswerWindow(q.seconds || 120);
   if (aiNextBtn) aiNextBtn.disabled = false;
@@ -1385,14 +1380,8 @@ async function renderAiQuestion() {
 }
 
 async function startAiRecording() {
-  if (!aiRecordBtn || !aiStopBtn) return;
+  if (!aiStopBtn) return;
   if (aiMediaRecorder && aiMediaRecorder.state === "recording") return;
-  if (aiRecordingAttempts >= 2) {
-    if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: max 2 attempts reached for this question";
-    aiRecordBtn.disabled = true;
-    aiStopBtn.disabled = true;
-    return;
-  }
   await ensureCamera();
   const audioTracks = cameraStream?.getAudioTracks?.() || [];
   if (!audioTracks.length) {
@@ -1413,7 +1402,6 @@ async function startAiRecording() {
   }
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-  aiRecordingAttempts += 1;
   setAiMeetingStatus("Listening…");
   syncAiMeetingButtons();
 
@@ -1433,7 +1421,7 @@ async function startAiRecording() {
       if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded ${formatAiTimer(Date.now() - aiRecordingStartAt)}`;
     } catch {
       aiLatestAudioBuffer = null;
-      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded (attempt ${aiRecordingAttempts}/2)`;
+      if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
     }
     setAiMeetingStatus("Transcribing…");
     syncAiMeetingButtons();
@@ -1445,12 +1433,11 @@ async function startAiRecording() {
         aiTranscriptEl.classList.remove("hidden");
       }
       if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
-      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded (attempt ${aiRecordingAttempts}/2) · Transcript ready`;
+      if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded · Transcript ready";
     } else if (aiTranscriptEl) {
       aiTranscriptEl.textContent = "Transcript: (unavailable)";
       aiTranscriptEl.classList.remove("hidden");
     }
-    aiRecordBtn.disabled = aiRecordingAttempts >= 2;
     aiStopBtn.disabled = true;
     setAiMeetingStatus("Ready");
     syncAiMeetingButtons();
@@ -1459,9 +1446,8 @@ async function startAiRecording() {
     aiStopPromiseResolve = null;
   };
   aiMediaRecorder.start(250);
-  aiRecordBtn.disabled = true;
   aiStopBtn.disabled = false;
-  if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recording (attempt ${aiRecordingAttempts}/2)...`;
+  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
   syncAiMeetingButtons();
 }
 
@@ -2158,12 +2144,6 @@ if (aiStartBtn) {
     requestFullscreen(document.documentElement);
     await startAiInterview();
     aiStartBtn.disabled = false;
-  });
-}
-
-if (aiRecordBtn) {
-  aiRecordBtn.addEventListener("click", () => {
-    startAiRecording().catch(() => {});
   });
 }
 
