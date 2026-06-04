@@ -49,6 +49,7 @@ const studentActiveRoomByEmail = new Map();
 const admissionByKey = new Map();
 const aiSessionsById = new Map();
 const aiReportsByScheduleId = new Map();
+const aiAudioByScheduleQuestion = new Map();
 
 const aiQuestionBank = [
   {
@@ -1785,8 +1786,9 @@ io.on("connection", (socket) => {
     const poseWarnings = typeof meta?.poseWarnings === "number" ? meta.poseWarnings : 0;
     const typedText = String(text || "");
     let spokenTranscript = String(transcript || "").trim();
+    const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : "audio/webm";
+    if (audioBuf) aiAudioByScheduleQuestion.set(`${session.scheduleId}:${qid}`, { audio: audioBuf, mimeType: mt });
     if (!spokenTranscript && audioBuf) {
-      const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : "audio/webm";
       const stt = await deepgramTranscribe({ audioBuf, mimeType: mt });
       if (stt.ok) spokenTranscript = stt.transcript;
     }
@@ -1870,6 +1872,17 @@ io.on("connection", (socket) => {
       interviewerEmail: session.interviewerEmail,
       totalScore,
       breakdown,
+      answers: session.answers.map((a) => ({
+        questionId: a.questionId,
+        topic: a.topic,
+        prompt: a.prompt,
+        transcript: a.transcript,
+        typedText: a.typedText,
+        score: a.score,
+        feedback: a.feedback,
+        audioBytes: a.audioBytes,
+        at: a.at
+      })),
       summary,
       finishedAt: nowIso()
     };
@@ -1913,6 +1926,33 @@ io.on("connection", (socket) => {
       return;
     }
     if (typeof ack === "function") ack({ ok: true, report });
+  });
+
+  socket.on("ai-get-audio", async ({ scheduleId, questionId }, ack) => {
+    const interviewerEmail = String(socket.data.user?.email || "").trim().toLowerCase();
+    if (socket.data.user?.role !== "interviewer" || !interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Forbidden" });
+      return;
+    }
+    const id = scheduleId != null ? String(scheduleId) : null;
+    const qid = String(questionId || "").trim();
+    if (!id || !qid) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid request" });
+      return;
+    }
+    const report = aiReportsByScheduleId.get(id) || null;
+    if (!report || report.interviewerEmail !== interviewerEmail) {
+      if (typeof ack === "function") ack({ ok: false, error: "Audio not available" });
+      return;
+    }
+    const stored = aiAudioByScheduleQuestion.get(`${id}:${qid}`) || null;
+    if (!stored?.audio?.byteLength) {
+      if (typeof ack === "function") ack({ ok: false, error: "Audio not available" });
+      return;
+    }
+    if (typeof ack === "function") {
+      ack({ ok: true, mimeType: stored.mimeType || "audio/webm", audio: stored.audio.toString("base64") });
+    }
   });
 
   socket.on("disconnect", () => {
