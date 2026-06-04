@@ -523,12 +523,45 @@ function beginAiReviewWindow(seconds) {
     aiReviewRemainingSec = Math.max(0, aiReviewRemainingSec - 1);
     if (aiReviewRemainingSec <= 0) {
       stopAiReviewWindow();
-      submitAiAnswer({ finish: false, auto: true }).catch(() => {});
+      setAiMeetingStatus("Ready");
+      syncAiMeetingButtons();
       return;
     }
     setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
     syncAiMeetingButtons();
   }, 1000);
+}
+
+async function quitAiInterview() {
+  stopAiReviewWindow();
+  stopAiTimer();
+  stopAiPoseMonitor();
+  stopAiSpeech();
+  hideAiCenterOverlay();
+  try {
+    if (aiMediaRecorder?.state === "recording") await stopAiRecording({ waitMs: 2500 });
+  } catch {
+  }
+  aiSessionId = null;
+  aiQuestions = [];
+  aiQuestionIndex = 0;
+  aiActiveScheduleId = null;
+  aiAnswerReady = false;
+  aiHasRecordedThisQuestion = false;
+  aiAllowSpeak = false;
+  aiStopping = false;
+  aiFinalizedThisRecording = false;
+  aiLiveSttActiveToken = 0;
+  aiLiveSttStopPromise = null;
+  try {
+    if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
+      await document.exitFullscreen();
+    }
+  } catch {
+  }
+  setAiMode(false);
+  meetingInfo.classList.remove("hidden");
+  meetingInfo.textContent = "You quit the AI interview.";
 }
 
 function showAiCenterOverlay(text) {
@@ -588,15 +621,18 @@ function syncAiMeetingButtons() {
     aiMeetingNextBtn.textContent = aiReviewRemainingSec > 0 ? `Proceed (${aiReviewRemainingSec}s)` : "Next";
   }
   if (aiMeetingFinishBtn) {
-    aiMeetingFinishBtn.disabled = !canSubmit;
-    aiMeetingFinishBtn.textContent = aiReviewRemainingSec > 0 ? `Finish (${aiReviewRemainingSec}s)` : "Finish";
+    aiMeetingFinishBtn.disabled = aiSubmitting || aiStopping;
+    aiMeetingFinishBtn.textContent = "Quit";
   }
 
   if (aiRecordBtn) aiRecordBtn.disabled = !canSpeak;
   if (aiStopBtn) aiStopBtn.disabled = !isRecording || aiStopping;
   const submitDisabled = !canSubmit;
   if (aiNextBtn) aiNextBtn.disabled = submitDisabled;
-  if (aiFinishBtn) aiFinishBtn.disabled = submitDisabled;
+  if (aiFinishBtn) {
+    aiFinishBtn.disabled = aiSubmitting || aiStopping;
+    aiFinishBtn.textContent = "Quit";
+  }
 }
 
 function mountAiMeetingUI() {
@@ -2240,8 +2276,9 @@ if (aiNextBtn) {
 
 if (aiFinishBtn) {
   aiFinishBtn.addEventListener("click", () => {
-    stopAiReviewWindow();
-    submitAiAnswer({ finish: true }).catch(() => {});
+    const ok = window.confirm("Do you want to quit the interview?");
+    if (!ok) return;
+    quitAiInterview().catch(() => {});
   });
 }
 
@@ -2266,8 +2303,9 @@ if (aiMeetingNextBtn) {
 
 if (aiMeetingFinishBtn) {
   aiMeetingFinishBtn.addEventListener("click", () => {
-    stopAiReviewWindow();
-    submitAiAnswer({ finish: true }).catch(() => {});
+    const ok = window.confirm("Do you want to quit the interview?");
+    if (!ok) return;
+    quitAiInterview().catch(() => {});
   });
 }
 
