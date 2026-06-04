@@ -1297,41 +1297,6 @@ video {
   background: rgba(37, 99, 235, 0.18);
 }
 
-.aiThinkOverlay {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 22px;
-  border-radius: 20px;
-  background: rgba(2, 6, 23, 0.68);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.62);
-  backdrop-filter: blur(14px);
-  pointer-events: none;
-}
-
-.aiThinkCount {
-  font-size: 64px;
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  color: #f8fafc;
-}
-
-.aiThinkLabel {
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(191, 219, 254, 0.9);
-}
-
 body.aiInterview #remoteVideos {
   display: none;
 }
@@ -1346,19 +1311,13 @@ body.aiInterview #aiMeetingBar {
 }
 
 body.aiInterview .meetingStage {
-  position: relative;
   align-items: center;
   justify-content: flex-start;
 }
 
 body.aiInterview #localCard {
-  position: fixed;
-  right: 18px;
-  bottom: 92px;
-  width: 220px;
-  min-height: 124px;
+  width: min(980px, 100%);
   aspect-ratio: 16 / 9;
-  z-index: 10;
 }
 
 body.aiInterview #aiInterviewCard {
@@ -1369,19 +1328,6 @@ body.aiInterview #aiInterviewCard {
   background: rgba(15, 23, 42, 0.68);
   color: #e2e8f0;
   box-shadow: 0 22px 64px rgba(2, 6, 23, 0.65);
-}
-
-body.aiInterview .aiHudIcon.mic,
-body.aiInterview .aiHudIcon.mic svg {
-  width: 22px;
-  height: 22px;
-}
-
-body.aiInterview .aiHudIcon.cam,
-body.aiInterview .aiHudIcon.cam svg {
-  width: 14px;
-  height: 14px;
-  opacity: 0.85;
 }
 
 body.aiInterview #aiInterviewCard .sectionEyebrow {

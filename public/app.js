@@ -27,6 +27,7 @@ const aiTimerEl = document.getElementById("aiTimer");
 const aiQuestionEl = document.getElementById("aiQuestion");
 const aiTranscriptEl = document.getElementById("aiTranscript");
 const aiAnswerInput = document.getElementById("aiAnswerInput");
+const aiRecordBtn = document.getElementById("aiRecordBtn");
 const aiStopBtn = document.getElementById("aiStopBtn");
 const aiRecorderMeta = document.getElementById("aiRecorderMeta");
 const aiPoseMeta = document.getElementById("aiPoseMeta");
@@ -58,11 +59,10 @@ const aiHudEl = document.getElementById("aiHud");
 const aiHudStatusEl = document.getElementById("aiHudStatus");
 const aiMeetingBarEl = document.getElementById("aiMeetingBar");
 const aiMeetingStatusEl = document.getElementById("aiMeetingStatus");
+const aiMeetingRetryBtn = document.getElementById("aiMeetingRetryBtn");
 const aiMeetingStopBtn = document.getElementById("aiMeetingStopBtn");
 const aiMeetingNextBtn = document.getElementById("aiMeetingNextBtn");
 const aiMeetingFinishBtn = document.getElementById("aiMeetingFinishBtn");
-const aiThinkOverlayEl = document.getElementById("aiThinkOverlay");
-const aiThinkCountEl = document.getElementById("aiThinkCount");
 
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -99,6 +99,7 @@ let aiLatestAudioMimeType = "audio/webm";
 let aiLatestTranscript = "";
 let aiStopPromise = null;
 let aiStopPromiseResolve = null;
+let aiRecordingAttempts = 0;
 let aiMeetingMounted = false;
 let aiPoseIntervalId = null;
 let aiPoseStableTotal = 0;
@@ -109,8 +110,6 @@ let aiSpeakAudio = null;
 let aiSpeakUrl = null;
 let aiSubmitting = false;
 let aiAutoStartAttemptedForScheduleId = null;
-let aiReportAudioUrl = null;
-let aiThinkToken = 0;
 
 const peers = new Map();
 const remoteMedia = new Map();
@@ -492,34 +491,14 @@ function setAiMeetingStatus(text) {
 
 function syncAiMeetingButtons() {
   const isRecording = aiMediaRecorder?.state === "recording";
+  const canRetry = !isRecording && aiRecordingAttempts > 0 && aiRecordingAttempts < 2;
+  if (aiMeetingRetryBtn) {
+    aiMeetingRetryBtn.disabled = !canRetry;
+    aiMeetingRetryBtn.classList.toggle("hidden", !canRetry);
+  }
   if (aiMeetingStopBtn) aiMeetingStopBtn.disabled = !isRecording;
   if (aiMeetingNextBtn) aiMeetingNextBtn.disabled = isRecording || aiSubmitting;
   if (aiMeetingFinishBtn) aiMeetingFinishBtn.disabled = isRecording || aiSubmitting;
-}
-
-function setAiThinkOverlay(visible, count) {
-  if (!aiThinkOverlayEl) return;
-  aiThinkOverlayEl.classList.toggle("hidden", !visible);
-  if (aiThinkCountEl && typeof count === "number") aiThinkCountEl.textContent = String(Math.max(0, Math.floor(count)));
-}
-
-async function runAiThinkCountdown(seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds || 0)));
-  const token = (aiThinkToken += 1);
-  if (!total) {
-    setAiThinkOverlay(false);
-    return;
-  }
-  setAiThinkOverlay(true, total);
-  if (aiTimerEl) aiTimerEl.textContent = formatAiTimer(total * 1000);
-  for (let left = total; left > 0; left -= 1) {
-    if (token !== aiThinkToken) return;
-    setAiThinkOverlay(true, left);
-    if (aiTimerEl) aiTimerEl.textContent = formatAiTimer(left * 1000);
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  if (token !== aiThinkToken) return;
-  setAiThinkOverlay(false);
 }
 
 function mountAiMeetingUI() {
@@ -530,8 +509,8 @@ function mountAiMeetingUI() {
   setLobbyVisible(false);
   if (aiHudEl) aiHudEl.classList.remove("hidden");
   if (aiMeetingBarEl) aiMeetingBarEl.classList.remove("hidden");
-  if (aiInterviewCard && aiInterviewCard.parentElement !== meetingStageEl) meetingStageEl.prepend(aiInterviewCard);
-  if (localCard.parentElement !== meetingStageEl) meetingStageEl.appendChild(localCard);
+  if (localCard.parentElement !== meetingStageEl) meetingStageEl.prepend(localCard);
+  if (aiInterviewCard && aiInterviewCard.parentElement !== meetingStageEl) meetingStageEl.appendChild(aiInterviewCard);
   setAiMeetingStatus("Listening…");
   syncAiMeetingButtons();
 }
@@ -539,8 +518,6 @@ function mountAiMeetingUI() {
 function unmountAiMeetingUI() {
   if (!aiMeetingMounted) return;
   aiMeetingMounted = false;
-  aiThinkToken += 1;
-  setAiThinkOverlay(false);
   document.body.classList.remove("aiInterview");
   document.body.classList.remove("inMeeting");
   if (aiHudEl) aiHudEl.classList.add("hidden");
@@ -791,138 +768,6 @@ function showAlertForUpcomingMeetings(upcomingMeetings) {
   }
 }
 
-function clearAiReportAudioUrl() {
-  if (!aiReportAudioUrl) return;
-  try {
-    URL.revokeObjectURL(aiReportAudioUrl);
-  } catch {
-  }
-  aiReportAudioUrl = null;
-}
-
-function base64ToBlobUrl(base64, mimeType) {
-  clearAiReportAudioUrl();
-  const b64 = String(base64 || "");
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-  const blob = new Blob([bytes], { type: String(mimeType || "audio/webm") });
-  aiReportAudioUrl = URL.createObjectURL(blob);
-  return aiReportAudioUrl;
-}
-
-function renderAiReportInMeetingInfo(report) {
-  meetingInfo.classList.remove("hidden");
-  meetingInfo.replaceChildren();
-  clearAiReportAudioUrl();
-
-  const header = document.createElement("div");
-  header.className = "row";
-
-  const title = document.createElement("div");
-  title.textContent = "AI report";
-  title.style.fontWeight = "800";
-
-  const closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.className = "btn";
-  closeBtn.textContent = "Close";
-  closeBtn.addEventListener("click", () => {
-    clearAiReportAudioUrl();
-    meetingInfo.classList.add("hidden");
-    meetingInfo.replaceChildren();
-  });
-
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-
-  const summary = document.createElement("div");
-  summary.textContent = String(report?.summary || "AI report loaded.");
-
-  const audioEl = document.createElement("audio");
-  audioEl.controls = true;
-  audioEl.style.width = "100%";
-
-  const list = document.createElement("div");
-  const answers = Array.isArray(report?.answers) ? report.answers : [];
-  const breakdown = Array.isArray(report?.breakdown) ? report.breakdown : [];
-  const rows = answers.length ? answers : breakdown;
-
-  for (const item of rows) {
-    const wrap = document.createElement("div");
-    wrap.style.marginTop = "12px";
-
-    const line = document.createElement("div");
-    const topic = String(item?.topic || "").trim();
-    const score = item?.score != null ? `${item.score}/20` : "";
-    line.textContent = [topic, score].filter(Boolean).join(" · ") || "Answer";
-    line.style.fontWeight = "750";
-
-    const prompt = String(item?.prompt || "").trim();
-    if (prompt) {
-      const q = document.createElement("div");
-      q.textContent = prompt;
-      q.style.opacity = "0.95";
-      q.style.marginTop = "6px";
-      wrap.appendChild(q);
-    }
-
-    const feedback = String(item?.feedback || "").trim();
-    if (feedback) {
-      const f = document.createElement("div");
-      f.textContent = `Feedback: ${feedback}`;
-      f.style.opacity = "0.92";
-      f.style.marginTop = "6px";
-      wrap.appendChild(f);
-    }
-
-    const transcript = String(item?.transcript || "").trim();
-    if (transcript) {
-      const t = document.createElement("div");
-      t.textContent = `Transcript: ${transcript}`;
-      t.style.opacity = "0.92";
-      t.style.marginTop = "6px";
-      wrap.appendChild(t);
-    }
-
-    const qid = String(item?.questionId || "").trim();
-    const audioBytes = Number(item?.audioBytes || 0);
-    if (qid) {
-      const playBtn = document.createElement("button");
-      playBtn.type = "button";
-      playBtn.className = "btn";
-      playBtn.textContent = audioBytes > 0 ? "Play audio" : "No audio";
-      playBtn.disabled = audioBytes <= 0;
-      playBtn.style.marginTop = "8px";
-      playBtn.addEventListener("click", async () => {
-        playBtn.disabled = true;
-        const res = await new Promise((resolve) => {
-          ensureSocket().emit("ai-get-audio", { scheduleId: report.scheduleId, questionId: qid }, (ack) => resolve(ack || { ok: false }));
-        });
-        if (!res.ok || !res.audio) {
-          meetingInfo.classList.remove("hidden");
-          meetingInfo.appendChild(document.createTextNode(`\n${res.error || "Audio not available"}`));
-          playBtn.disabled = false;
-          return;
-        }
-        const url = base64ToBlobUrl(res.audio, res.mimeType || "audio/webm");
-        audioEl.src = url;
-        audioEl.play().catch(() => {});
-        playBtn.disabled = false;
-      });
-      wrap.appendChild(playBtn);
-    }
-
-    wrap.prepend(line);
-    list.appendChild(wrap);
-  }
-
-  meetingInfo.appendChild(header);
-  meetingInfo.appendChild(summary);
-  meetingInfo.appendChild(audioEl);
-  meetingInfo.appendChild(list);
-}
-
 function renderDashboard() {
   if (currentUser?.role !== "interviewer") return;
   const dash = lastDashboard;
@@ -1025,7 +870,8 @@ function renderDashboard() {
             return;
           }
           const report = res.report || null;
-          renderAiReportInMeetingInfo(report);
+          meetingInfo.classList.remove("hidden");
+          meetingInfo.textContent = report?.summary || "AI report loaded.";
         });
         actions.appendChild(reportBtn);
       }
@@ -1356,22 +1202,22 @@ async function renderAiQuestion() {
   }
   aiLatestAudioBuffer = null;
   aiAudioChunks = [];
+  aiRecordingAttempts = 0;
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: not recording";
   if (aiFeedbackEl) aiFeedbackEl.classList.add("hidden");
   stopAiTimer();
   stopAiSpeech();
   if (aiTimerEl) aiTimerEl.textContent = formatAiTimer(Math.max(0, Number(q.seconds || 0) * 1000));
+  if (aiRecordBtn) aiRecordBtn.disabled = true;
   if (aiStopBtn) aiStopBtn.disabled = true;
   if (aiNextBtn) aiNextBtn.disabled = true;
   if (aiFinishBtn) aiFinishBtn.disabled = true;
   setAiMeetingStatus("Speaking…");
   if (aiRecorderMeta) aiRecorderMeta.textContent = "Voice: asking question...";
   const voiced = await playAiVoice(q.prompt || "");
-  setAiMeetingStatus("Get ready…");
-  if (aiRecorderMeta) aiRecorderMeta.textContent = voiced ? "Get ready…" : "Get ready…";
-  await runAiThinkCountdown(10);
   setAiMeetingStatus("Listening…");
-  if (aiRecorderMeta) aiRecorderMeta.textContent = "Listening…";
+  if (aiRecorderMeta) aiRecorderMeta.textContent = voiced ? "Listening…" : "Listening…";
+  if (aiRecordBtn) aiRecordBtn.disabled = false;
   if (aiStopBtn) aiStopBtn.disabled = true;
   await beginAiAnswerWindow(q.seconds || 120);
   if (aiNextBtn) aiNextBtn.disabled = false;
@@ -1380,8 +1226,14 @@ async function renderAiQuestion() {
 }
 
 async function startAiRecording() {
-  if (!aiStopBtn) return;
+  if (!aiRecordBtn || !aiStopBtn) return;
   if (aiMediaRecorder && aiMediaRecorder.state === "recording") return;
+  if (aiRecordingAttempts >= 2) {
+    if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: max 2 attempts reached for this question";
+    aiRecordBtn.disabled = true;
+    aiStopBtn.disabled = true;
+    return;
+  }
   await ensureCamera();
   const audioTracks = cameraStream?.getAudioTracks?.() || [];
   if (!audioTracks.length) {
@@ -1402,6 +1254,7 @@ async function startAiRecording() {
   }
   aiRecordingStartAt = Date.now();
   aiMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  aiRecordingAttempts += 1;
   setAiMeetingStatus("Listening…");
   syncAiMeetingButtons();
 
@@ -1421,7 +1274,7 @@ async function startAiRecording() {
       if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded ${formatAiTimer(Date.now() - aiRecordingStartAt)}`;
     } catch {
       aiLatestAudioBuffer = null;
-      if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded";
+      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded (attempt ${aiRecordingAttempts}/2)`;
     }
     setAiMeetingStatus("Transcribing…");
     syncAiMeetingButtons();
@@ -1433,11 +1286,12 @@ async function startAiRecording() {
         aiTranscriptEl.classList.remove("hidden");
       }
       if (aiAnswerInput && !String(aiAnswerInput.value || "").trim()) aiAnswerInput.value = transcript;
-      if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recorded · Transcript ready";
+      if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recorded (attempt ${aiRecordingAttempts}/2) · Transcript ready`;
     } else if (aiTranscriptEl) {
       aiTranscriptEl.textContent = "Transcript: (unavailable)";
       aiTranscriptEl.classList.remove("hidden");
     }
+    aiRecordBtn.disabled = aiRecordingAttempts >= 2;
     aiStopBtn.disabled = true;
     setAiMeetingStatus("Ready");
     syncAiMeetingButtons();
@@ -1446,8 +1300,9 @@ async function startAiRecording() {
     aiStopPromiseResolve = null;
   };
   aiMediaRecorder.start(250);
+  aiRecordBtn.disabled = true;
   aiStopBtn.disabled = false;
-  if (aiRecorderMeta) aiRecorderMeta.textContent = "Audio: recording...";
+  if (aiRecorderMeta) aiRecorderMeta.textContent = `Audio: recording (attempt ${aiRecordingAttempts}/2)...`;
   syncAiMeetingButtons();
 }
 
@@ -1643,6 +1498,14 @@ function renderStudentWaiting() {
 
   if (mode === "ai") {
     if (studentJoinForm) studentJoinForm.classList.add("hidden");
+    const schedId = next?.id != null ? String(next.id) : null;
+    const scheduledTs = next?.scheduledAt ? new Date(next.scheduledAt).getTime() : NaN;
+    const now = Date.now();
+    const withinStartWindow = !Number.isNaN(scheduledTs) ? now >= scheduledTs && now <= scheduledTs + 10 * 60 * 1000 : true;
+    if (schedId && withinStartWindow && !aiSessionId && aiAutoStartAttemptedForScheduleId !== schedId) {
+      aiAutoStartAttemptedForScheduleId = schedId;
+      startAiInterview().catch(() => {});
+    }
     return;
   }
 
@@ -2147,6 +2010,12 @@ if (aiStartBtn) {
   });
 }
 
+if (aiRecordBtn) {
+  aiRecordBtn.addEventListener("click", () => {
+    startAiRecording().catch(() => {});
+  });
+}
+
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
     stopAiRecording({ waitMs: 10000 }).catch(() => {});
@@ -2162,6 +2031,12 @@ if (aiNextBtn) {
 if (aiFinishBtn) {
   aiFinishBtn.addEventListener("click", () => {
     submitAiAnswer({ finish: true }).catch(() => {});
+  });
+}
+
+if (aiMeetingRetryBtn) {
+  aiMeetingRetryBtn.addEventListener("click", () => {
+    startAiRecording().catch(() => {});
   });
 }
 
