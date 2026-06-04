@@ -554,9 +554,17 @@ function startAiAnswerTimer(seconds) {
     if (aiAnswerRemainingSec <= 0) {
       clearInterval(aiAnswerIntervalId);
       aiAnswerIntervalId = null;
-      stopAndContinueAi().catch(() => {});
+      stopAndShowReviewAi().catch(() => {});
     }
   }, 1000);
+}
+
+async function stopAndShowReviewAi() {
+  if (!aiSessionId) return;
+  stopAiReviewWindow();
+  if (aiMediaRecorder?.state === "recording") {
+    await stopAiRecording({ waitMs: 20000 });
+  }
 }
 
 async function stopAndContinueAi() {
@@ -1488,7 +1496,7 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
   aiAnswerReady = true;
   aiStopping = false;
   hideAiCenterOverlay();
-  beginAiReviewWindow(20);
+  beginAiReviewWindow(10);
   syncAiMeetingButtons();
 }
 
@@ -1698,7 +1706,7 @@ async function submitAiAnswer({ finish, auto }) {
     new Promise((resolve) => {
       ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
     }),
-    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 12000))
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 30000))
   ]);
   if (!res.ok) {
     if (aiFeedbackEl) {
@@ -1737,7 +1745,7 @@ async function submitAiAnswer({ finish, auto }) {
       new Promise((resolve) => {
         ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
       }),
-      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 12000))
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 30000))
     ]);
     if (!fin.ok) {
       if (aiFeedbackEl) {
@@ -2328,7 +2336,7 @@ if (aiRecordBtn) {
 
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
-    stopAndContinueAi().catch(() => {});
+    stopAndShowReviewAi().catch(() => {});
   });
 }
 
@@ -2354,7 +2362,7 @@ if (aiMeetingSpeakBtn) {
 
 if (aiMeetingStopBtn) {
   aiMeetingStopBtn.addEventListener("click", () => {
-    stopAndContinueAi().catch(() => {});
+    stopAndShowReviewAi().catch(() => {});
   });
 }
 
