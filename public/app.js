@@ -59,7 +59,6 @@ const aiHudEl = document.getElementById("aiHud");
 const aiHudStatusEl = document.getElementById("aiHudStatus");
 const aiMeetingBarEl = document.getElementById("aiMeetingBar");
 const aiMeetingStatusEl = document.getElementById("aiMeetingStatus");
-const aiMeetingRetryBtn = document.getElementById("aiMeetingRetryBtn");
 const aiMeetingStopBtn = document.getElementById("aiMeetingStopBtn");
 const aiMeetingNextBtn = document.getElementById("aiMeetingNextBtn");
 const aiMeetingFinishBtn = document.getElementById("aiMeetingFinishBtn");
