@@ -1519,7 +1519,7 @@ async function finalizeAiRecording({ blob, mimeType, liveTranscript }) {
   aiAnswerReady = true;
   aiStopping = false;
   hideAiCenterOverlay();
-  beginAiReviewWindow(10);
+  console.log("finalizeAiRecording: transcript ready, awaiting Save & continue");
   syncAiMeetingButtons();
 }
 
@@ -2367,13 +2367,14 @@ if (aiRecordBtn) {
 
 if (aiStopBtn) {
   aiStopBtn.addEventListener("click", () => {
-    stopAndShowReviewAi().catch(() => {});
+    console.log("aiStopBtn clicked: submitting answer and advancing");
+    stopAndContinueAi().catch(() => {});
   });
 }
 
 if (aiNextBtn) {
   aiNextBtn.addEventListener("click", () => {
-    stopAiReviewWindow();
+    console.log("aiNextBtn clicked: submitting answer and advancing");
     submitAiAnswer({ finish: false }).catch(() => {});
   });
 }
@@ -2393,13 +2394,14 @@ if (aiMeetingSpeakBtn) {
 
 if (aiMeetingStopBtn) {
   aiMeetingStopBtn.addEventListener("click", () => {
-    stopAndShowReviewAi().catch(() => {});
+    console.log("aiMeetingStopBtn clicked: submitting answer and advancing");
+    stopAndContinueAi().catch(() => {});
   });
 }
 
 if (aiMeetingNextBtn) {
   aiMeetingNextBtn.addEventListener("click", () => {
-    stopAiReviewWindow();
+    console.log("aiMeetingNextBtn clicked: submitting answer and advancing");
     submitAiAnswer({ finish: false }).catch(() => {});
   });
 }
