@@ -531,22 +531,37 @@ function beginAiReviewWindow(seconds) {
   syncAiMeetingButtons();
   aiReviewIntervalId = setInterval(() => {
     aiReviewRemainingSec = Math.max(0, aiReviewRemainingSec - 1);
-    if (aiReviewRemainingSec <= 0) {
-      const intervalId = aiReviewIntervalId;
-      if (intervalId) {
-        clearInterval(intervalId);
-        aiReviewIntervalId = null;
-      }
-      aiReviewRemainingSec = 0;
-      syncAiMeetingButtons();
-      submitAiAnswer({ finish: false, auto: true }).catch((err) => {
-        console.error("Auto-advance failed:", err);
-      });
-      return;
-    }
     setAiMeetingStatus(`Review (${aiReviewRemainingSec}s)`);
     syncAiMeetingButtons();
+    if (aiReviewRemainingSec > 0) return;
+    stopAiReviewWindow();
+    handleAiAutoAdvance();
   }, 1000);
+}
+
+async function handleAiAutoAdvance() {
+  if (aiSubmitting) {
+    console.warn("Auto-advance: already submitting");
+    return;
+  }
+  if (!aiSessionId) {
+    console.warn("Auto-advance: no session");
+    return;
+  }
+  if (!socket) {
+    console.warn("Auto-advance: no socket");
+    return;
+  }
+  if (!socket.connected) {
+    console.warn("Auto-advance: socket not connected");
+    return;
+  }
+  console.log("Auto-advance: calling submitAiAnswer");
+  try {
+    await submitAiAnswer({ finish: false, auto: true });
+  } catch (err) {
+    console.error("Auto-advance: submitAiAnswer threw:", err);
+  }
 }
 
 function startAiAnswerTimer(seconds) {
@@ -1686,8 +1701,14 @@ async function startAiInterview() {
 }
 
 async function submitAiAnswer({ finish, auto }) {
-  if (!aiSessionId) return;
-  if (aiSubmitting) return;
+  if (!aiSessionId) {
+    console.warn("submitAiAnswer: no session");
+    return;
+  }
+  if (aiSubmitting) {
+    console.warn("submitAiAnswer: already submitting");
+    return;
+  }
   const q = aiQuestions[aiQuestionIndex] || null;
   if (!q) return;
   aiSubmitting = true;
@@ -1749,6 +1770,7 @@ async function submitAiAnswer({ finish, auto }) {
   }
 
   const nextIndex = aiQuestionIndex + 1;
+  console.log(`submitAiAnswer: nextIndex=${nextIndex}, totalQuestions=${aiQuestions.length}, finish=${finish}`);
   if (finish || nextIndex >= aiQuestions.length) {
     const fin = await Promise.race([
       new Promise((resolve) => {
