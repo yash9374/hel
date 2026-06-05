@@ -570,10 +570,11 @@ function startAiAnswerTimer(seconds) {
   aiAnswerRemainingSec = Math.max(0, Math.floor(Number(seconds || 0)));
   if (aiTimerEl) aiTimerEl.textContent = formatMmSs(aiAnswerRemainingSec);
   aiAnswerIntervalId = setInterval(() => {
-    if (aiMediaRecorder?.state !== "recording") return;
     aiAnswerRemainingSec = Math.max(0, aiAnswerRemainingSec - 1);
     if (aiTimerEl) aiTimerEl.textContent = formatMmSs(aiAnswerRemainingSec);
-    setAiMeetingStatus(`Recording ${formatMmSs(aiAnswerRemainingSec)}`);
+    if (aiMediaRecorder?.state === "recording") {
+      setAiMeetingStatus(`Recording ${formatMmSs(aiAnswerRemainingSec)}`);
+    }
     if (aiAnswerRemainingSec <= 0) {
       clearInterval(aiAnswerIntervalId);
       aiAnswerIntervalId = null;
@@ -1731,21 +1732,33 @@ async function submitAiAnswer({ finish, auto }) {
       poseWarnings: warnings
     }
   };
-  setAiMeetingStatus("Submitting… (this may take up to 2 minutes)");
+  setAiMeetingStatus("Submitting… (this may take up to 45 seconds)");
   const res = await Promise.race([
     new Promise((resolve) => {
       ensureSocket().emit("ai-answer", payload, (ack) => resolve(ack || { ok: false }));
     }),
-    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 120000))
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Submit timed out" }), 45000))
   ]);
   if (!res.ok) {
     if (aiFeedbackEl) {
       aiFeedbackEl.classList.remove("hidden");
       aiFeedbackEl.textContent = res.error || "Failed to submit answer";
     }
+    aiSubmitting = false;
+    // If this was an auto-advance, force-skip to the next question instead of getting stuck
+    if (auto) {
+      console.warn("Auto-advance submit failed, force-skipping to next question");
+      const nextIdx = aiQuestionIndex + 1;
+      if (nextIdx < aiQuestions.length) {
+        aiQuestionIndex = nextIdx;
+        setAiMeetingStatus("Skipped (submit failed)");
+        syncAiMeetingButtons();
+        await renderAiQuestion();
+        return;
+      }
+    }
     setAiMeetingStatus("Ready");
     syncAiMeetingButtons();
-    aiSubmitting = false;
     return;
   }
   if (aiTranscriptEl) {
@@ -1776,7 +1789,7 @@ async function submitAiAnswer({ finish, auto }) {
       new Promise((resolve) => {
         ensureSocket().emit("ai-finish", { sessionId: aiSessionId }, (ack) => resolve(ack || { ok: false }));
       }),
-      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 120000))
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "Finish timed out" }), 45000))
     ]);
     if (!fin.ok) {
       if (aiFeedbackEl) {

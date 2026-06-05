@@ -179,14 +179,24 @@ async function deepgramTranscribe({ audioBuf, mimeType }) {
   url.searchParams.set("detect_language", "true");
   url.searchParams.set("utterances", "false");
   const mt = String(mimeType || "audio/webm").split(";")[0].trim() || "audio/webm";
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Token ${deepgramApiKey}`,
-      "Content-Type": mt
-    },
-    body: audioBuf
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${deepgramApiKey}`,
+        "Content-Type": mt
+      },
+      body: audioBuf,
+      signal: ctrl.signal
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    return { ok: false, error: err.name === "AbortError" ? "Deepgram transcription timed out" : "Deepgram transcription failed" };
+  }
+  clearTimeout(timer);
   if (!res.ok) return { ok: false, error: "Deepgram transcription failed" };
   const data = await res.json().catch(() => null);
   const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript;
@@ -357,18 +367,28 @@ async function rateAiAnswerWithOpenAI({ question, transcript, typedText, topic }
     }
   ];
 
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${openaiApiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      input,
-      response_format: { type: "json_schema", json_schema: schema }
-    })
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  let res;
+  try {
+    res = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        input,
+        response_format: { type: "json_schema", json_schema: schema }
+      }),
+      signal: ctrl.signal
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    return { ok: false, error: err.name === "AbortError" ? "OpenAI rating timed out" : "OpenAI rating failed" };
+  }
+  clearTimeout(timer);
   if (!res.ok) return { ok: false, error: "OpenAI rating failed" };
   const payload = await res.json().catch(() => null);
   const text = readResponseText(payload);
@@ -1767,6 +1787,13 @@ io.on("connection", (socket) => {
     const bank = aiQuestionBank.find((q) => q.id === qid) || null;
     if (!bank) {
       if (typeof ack === "function") ack({ ok: false, error: "Invalid question" });
+      return;
+    }
+
+    // Prevent duplicate submissions for the same question
+    const alreadyAnswered = session.answers.some((a) => a.questionId === qid);
+    if (alreadyAnswered) {
+      if (typeof ack === "function") ack({ ok: true, score: 0, feedback: "Already submitted", transcript: "", strengths: [], improvements: [], usedGpt: false });
       return;
     }
 
